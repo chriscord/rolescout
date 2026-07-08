@@ -72,8 +72,8 @@ def _urls_in_text(value: str) -> list[str]:
     return re.findall(r"https?://[^\\s,'\"\]\)]+", value)
 
 
-def _registry_self_hosted() -> dict[str, dict]:
-    """Tiny parser for references/search-source-registry.yaml self-hosted entries.
+def _registry_registered_careers() -> dict[str, dict]:
+    """Tiny parser for maintained company careers registry entries.
 
     PyYAML is intentionally not a runtime dependency. The registry shape we need
     here is simple: company name plus authoritative careers/search/posting/mirror
@@ -87,33 +87,40 @@ def _registry_self_hosted() -> dict[str, dict]:
     except OSError:
         return {}
     out, current = {}, None
-    in_self_hosted = False
+    active_section = ""
+    supported_sections = {"self_hosted_careers", "major_company_careers"}
     for raw in lines:
         stripped = raw.strip()
-        if stripped.startswith("self_hosted_careers:"):
-            in_self_hosted = True
+        if not raw.startswith(" ") and stripped.endswith(":"):
+            if current:
+                out.setdefault(norm(current["name"]), current)
+                current = None
+            section = stripped[:-1]
+            active_section = section if section in supported_sections else ""
             continue
-        if in_self_hosted and stripped.startswith("job_boards_and_aggregators:"):
-            break
-        if not in_self_hosted:
+        if not active_section:
             continue
         if stripped.startswith("- name:"):
             if current:
-                out[norm(current["name"])] = current
+                out.setdefault(norm(current["name"]), current)
             current = {"name": _clean_yaml_scalar(stripped.split(":", 1)[1]),
                        "urls": []}
             continue
         if not current:
             continue
-        for key in ("careers_search_url", "posting_url"):
+        for key in ("careers_search_url", "listing_url", "posting_url",
+                    "detail_prefix", "detail_pattern", "raw_ats_url",
+                    "evidence_url"):
             if stripped.startswith(key + ":"):
                 val = _clean_yaml_scalar(stripped.split(":", 1)[1])
                 if val.startswith("http"):
                     current["urls"].append(val)
+        if stripped.startswith("alternate_detail_prefixes:"):
+            current["urls"].extend(_urls_in_text(stripped))
         if stripped.startswith("mirrors:"):
             current["urls"].extend(_urls_in_text(stripped))
     if current:
-        out[norm(current["name"])] = current
+        out.setdefault(norm(current["name"]), current)
     return out
 
 
@@ -312,13 +319,18 @@ def main() -> int:
                 fails.append(f"log candidate {i} ({c.get('company')}): kept without job_id")
             elif job_ids and jid not in job_ids:
                 fails.append(f"log candidate {i}: kept job_id '{jid}' not in job_list store")
+            if jid:
+                snapshot = t / "jobs" / f"{jid}.json"
+                if not snapshot.exists():
+                    fails.append(f"log candidate {i} ({c.get('company')}/{c.get('title')}): "
+                                 f"missing JD snapshot targets/jobs/{jid}.json")
 
     # Self-hosted careers registry enforcement for declared seeds: if the
     # maintained registry says a seed's canonical source is self-hosted, final
     # artifacts must show that source family was actually used. A guessed ATS
     # token or stale API alone cannot prove absence.
     if seeds_declared:
-        registry_self_hosted = _registry_self_hosted()
+        registry_self_hosted = _registry_registered_careers()
         for s in seeds_declared:
             ns = norm(s)
             pc = plan_companies.get(ns)
@@ -337,7 +349,8 @@ def main() -> int:
             hay = f"{plan_hay} {fallback_hay} {query_hay}"
             if reg_entry and not _has_registry_source(hay, reg_entry):
                 fails.append(
-                    f"declared seed '{s}' is listed in the self-hosted careers registry, "
+                    f"declared seed '{s}' is listed in the self-hosted careers registry "
+                    "or maintained careers registry, "
                     "but source-plan/research-log do not show its registry careers/search/"
                     "posting source family — do not conclude absence from guessed ATS "
                     "tokens, stale APIs, or generic search plans")

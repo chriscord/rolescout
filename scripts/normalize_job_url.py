@@ -3,11 +3,15 @@
 
 Usage:
   python3 scripts/normalize_job_url.py --url URL [--company COMPANY --title TITLE]
+  python3 scripts/normalize_job_url.py URL COMPANY TITLE
+  python3 scripts/normalize_job_url.py COMPANY TITLE URL
   python3 scripts/normalize_job_url.py --json rows.json   # adds canonical_url/job_id to each row
 
 Outputs JSON to stdout: {"canonical_url": ..., "url_hash": ..., "job_id": ...}
 job_id format: <company-slug>--<title-slug>--<8-char-hash>. Exit 1 on invalid URL.
 """
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -55,13 +59,35 @@ def build(url: str, company: str = "", title: str = "") -> dict:
     }
 
 
-def main() -> int:
+def _parse_positionals(values: list[str]) -> tuple[str, str, str]:
+    if not values:
+        return "", "", ""
+    url_indexes = [i for i, value in enumerate(values)
+                   if re.match(r"^https?://", value.strip())]
+    if not url_indexes:
+        raise ValueError("positional form requires one http(s) URL")
+    idx = url_indexes[0]
+    url = values[idx]
+    before = values[:idx]
+    after = values[idx + 1:]
+    if idx == 0:
+        company = after[0] if after else ""
+        title = " ".join(after[1:]) if len(after) > 1 else ""
+    else:
+        company = before[0] if before else ""
+        title = " ".join(before[1:] + after)
+    return url, company, title
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("values", nargs="*",
+                    help="forgiving positional form: URL COMPANY TITLE or COMPANY TITLE URL")
     ap.add_argument("--url")
     ap.add_argument("--company", default="")
     ap.add_argument("--title", default="")
     ap.add_argument("--json", help="path to a JSON list of row dicts with source_url/company/title")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     try:
         if args.json:
             with open(args.json, encoding="utf-8") as f:
@@ -71,11 +97,19 @@ def main() -> int:
                 row["source_url"] = info["canonical_url"]
                 row.setdefault("job_id", info["job_id"])
             rows = normalize_job_rows(rows)
-            print(json.dumps(rows, indent=2))
-        elif args.url:
-            print(json.dumps(build(args.url, args.company, args.title), indent=2))
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
         else:
-            ap.error("provide --url or --json")
+            url = args.url
+            company = args.company
+            title = args.title
+            if not url and args.values:
+                url, pos_company, pos_title = _parse_positionals(args.values)
+                company = company or pos_company
+                title = title or pos_title
+            if url:
+                print(json.dumps(build(url, company, title), indent=2, ensure_ascii=False))
+            else:
+                ap.error("provide --url, --json, or positional URL/company/title")
     except (ValueError, OSError, json.JSONDecodeError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1

@@ -6,8 +6,9 @@
 #   relying on it; a stale URL is a discovery seed, not evidence of absence.
 #
 # Format note:
-#   This file is intentionally plain YAML for human editing. The current runtime
-#   does not parse it deterministically; job-opening-research agents read it as a
+#   This file is intentionally plain YAML for human editing. The runtime parses
+#   the constrained self_hosted_careers.companies section through
+#   scripts/resolve_company_sources.py; agents still read the whole file as a
 #   reference document while building targets/company-universe.json and
 #   targets/source-plan.json.
 
@@ -247,6 +248,219 @@ self_hosted_careers:
 # Rule: discover here, then verify and capture the JD at the company/ATS source
 # whenever one exists. Empty/stale feed results are coverage signals, never
 # evidence of absence.
+major_company_careers:
+  source: career-site-url-prefixes.md attachment
+  collected: 2026-07-08
+  policy: >
+    Maintained official/branded career-site discovery seeds for large technology
+    employers. Verify every listing/detail route at runtime. This registry is
+    source coverage data, not proof of role existence or absence.
+  companies:
+    - name: Google
+      source_kind: self_hosted
+      render: server_html
+      careers_search_url: https://www.google.com/about/careers/applications/jobs/results/
+      posting_url: https://www.google.com/about/careers/applications/jobs/results/<id>-<slug>
+      evidence_url: https://www.google.com/about/careers/applications/jobs/results/
+    - name: Meta
+      source_kind: self_hosted
+      render: js
+      careers_search_url: https://www.metacareers.com/jobs/
+      posting_url: https://www.metacareers.com/jobs/<id>/
+      alternate_detail_prefixes: ["https://www.metacareers.com/profile/job_details/<id>/"]
+      evidence_url: https://www.metacareers.com/jobs/1012203888111866/
+    - name: Amazon
+      source_kind: self_hosted
+      render: json_api
+      careers_search_url: https://www.amazon.jobs/en/search
+      posting_url: https://www.amazon.jobs/en/jobs/<id>/<slug>
+      evidence_url: https://www.amazon.jobs/en/jobs/3179905/application-builder
+    - name: Netflix
+      source_kind: branded_eightfold
+      render: json_api
+      careers_search_url: https://explore.jobs.netflix.net/careers
+      posting_url: https://explore.jobs.netflix.net/careers/job/<id>-<slug>
+      evidence_url: https://explore.jobs.netflix.net/careers/job/790298128594-software-engineer-5-content-business-products-usa-remote
+    - name: Airbnb
+      source_kind: branded_greenhouse
+      render: json_api
+      careers_search_url: https://careers.airbnb.com/positions/
+      posting_url: https://careers.airbnb.com/positions/<id>/
+      raw_ats_url: https://boards-api.greenhouse.io/v1/boards/airbnb/jobs
+      evidence_url: https://careers.airbnb.com/positions/7612790/
+    - name: Apple
+      source_kind: self_hosted
+      render: json_api
+      careers_search_url: https://jobs.apple.com/en-us/search
+      posting_url: https://jobs.apple.com/en-us/details/<id>/<slug>
+      evidence_url: https://jobs.apple.com/en-us/details/114438158/us-specialist-seasonal-part-time
+    - name: Microsoft
+      source_kind: self_hosted
+      render: json_api
+      careers_search_url: https://jobs.careers.microsoft.com/global/en/search
+      posting_url: https://jobs.careers.microsoft.com/global/en/job/<id>
+      evidence_url: https://jobs.careers.microsoft.com/global/en/job/1808941
+    - name: Uber
+      source_kind: branded_oracle_cloud
+      render: json_api
+      careers_search_url: https://jobs.uber.com/en/jobs/
+      posting_url: https://jobs.uber.com/en/jobs/<id>/
+      evidence_url: https://jobs.uber.com/en/jobs/
+    - name: Tesla
+      source_kind: self_hosted
+      render: server_html
+      careers_search_url: https://www.tesla.com/careers/search/
+      posting_url: https://www.tesla.com/careers/search/job/<slug>-<id>
+      evidence_url: https://www.tesla.com/careers/search/job/software-engineer-people-products-257305
+    - name: X (xAI / X Platform)
+      aliases: ["X", "xAI"]
+      source_kind: greenhouse
+      render: server_html
+      careers_search_url: https://x.ai/careers/open-roles
+      posting_url: https://job-boards.greenhouse.io/xai/jobs/<id>
+      evidence_url: https://x.ai/careers/open-roles
+      notes: "X Corp vs xAI routing is ambiguous; verify at runtime."
+    - name: Oracle
+      source_kind: self_hosted
+      render: server_html
+      careers_search_url: https://careers.oracle.com/jobs/
+      posting_url: https://careers.oracle.com/jobs/job/<id>
+      evidence_url: https://careers.oracle.com/jobs/job/330473
+    - name: Palantir
+      source_kind: lever
+      render: json_api
+      careers_search_url: https://jobs.lever.co/palantir
+      posting_url: https://jobs.lever.co/palantir/<posting-id>
+      evidence_url: https://jobs.lever.co/palantir/dab396d4-2f14-4796-aac0-0d82883dccf0
+    - name: Palo Alto Networks
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://jobs.paloaltonetworks.com/en
+      posting_url: https://jobs.paloaltonetworks.com/en/jobs/job/<slug>
+      evidence_url: https://jobs.paloaltonetworks.com/en/jobs/job/principal-consultant-proactive-security-unit-42-sydney-0539f538-65ef-4b3c-abe3-e8b51e04640e/
+    - name: CrowdStrike
+      source_kind: workday
+      render: json_api
+      careers_search_url: https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers
+      posting_url: https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers/job/<location>/<slug>_<req-id>
+      evidence_url: https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers/job/USA---Remote/Manager--Unified-Communications---Collaboration--Remote-_R29258
+    - name: SAP
+      source_kind: successfactors_branded
+      render: server_html
+      careers_search_url: https://jobs.sap.com/
+      posting_url: https://jobs.sap.com/job/<location-title>/<id>/
+      evidence_url: https://jobs.sap.com/job/Newport-Beach-Development-Expert-CA-92660/1401822633/
+    - name: Shopify
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://www.shopify.com/careers
+      posting_url: https://www.shopify.com/careers/<slug>_<uuid>
+      evidence_url: https://www.shopify.com/careers/senior-staff-engineer-privacy-engineering_cad17f83-4d2f-45a9-8728-f149b3a50ddf
+    - name: Fortinet
+      source_kind: oracle_cloud
+      render: server_html
+      careers_search_url: https://www.fortinet.com/corporate/careers
+      posting_url: https://edel.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/<id>
+      evidence_url: https://edel.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/23229
+    - name: ServiceNow
+      source_kind: smartrecruiters_style_branded
+      render: server_html
+      careers_search_url: https://careers.servicenow.com/jobs/
+      posting_url: https://careers.servicenow.com/jobs/<id>/<slug>/
+      evidence_url: https://careers.servicenow.com/jobs/744000122087338/sr-staff-information-architect-ia-taxonomy-solutions/
+    - name: Cloudflare
+      source_kind: greenhouse
+      render: server_html
+      careers_search_url: https://job-boards.greenhouse.io/cloudflare
+      posting_url: https://job-boards.greenhouse.io/cloudflare/jobs/<id>
+      evidence_url: https://job-boards.greenhouse.io/cloudflare/jobs/7505582
+    - name: Datadog
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.datadoghq.com/
+      posting_url: https://careers.datadoghq.com/detail/<id>/
+      evidence_url: https://careers.datadoghq.com/detail/7172466/
+    - name: Snowflake
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.snowflake.com/us/en/search-results
+      posting_url: https://careers.snowflake.com/us/en/job/<job-id>/<slug>
+      evidence_url: https://careers.snowflake.com/us/en/job/SNCOUSDD524BEA4F4D8B48119F34198237EXTERNALENUS/Software-Engineer-Backend
+    - name: Adobe
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.adobe.com/us/en/search-results
+      posting_url: https://careers.adobe.com/us/en/job/<req-id>/<slug>
+      evidence_url: https://careers.adobe.com/us/en/job/R168187/Software-Development-Engineer
+    - name: Garmin
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.garmin.com/careers-home/jobs
+      posting_url: https://careers.garmin.com/careers-home/jobs/<id>
+      evidence_url: https://careers.garmin.com/careers-home/jobs/6649
+    - name: Block Inc
+      aliases: ["Block"]
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://block.xyz/careers/jobs
+      posting_url: https://block.xyz/careers/jobs/<id>
+      evidence_url: https://block.xyz/careers/jobs/4980557008
+    - name: Adyen
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.adyen.com/vacancies
+      posting_url: https://careers.adyen.com/vacancies/<id>-<slug>
+      evidence_url: https://careers.adyen.com/vacancies/6762094-enterprise-account-manager
+    - name: Stripe
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://stripe.com/jobs/search
+      posting_url: https://stripe.com/jobs/listing/<slug>/<id>
+      evidence_url: https://stripe.com/jobs/listing/staff-full-stack-engineer-identity/7895467
+    - name: Workday Inc
+      aliases: ["Workday"]
+      source_kind: workday
+      render: json_api
+      careers_search_url: https://workday.wd5.myworkdayjobs.com/Workday
+      posting_url: https://workday.wd5.myworkdayjobs.com/Workday/job/<location>/<slug>_<req-id>
+      evidence_url: https://workday.wd5.myworkdayjobs.com/Workday/job/USA-CO-Boulder/DevOps-Engineer_JR-0108209
+    - name: NetApp
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.netapp.com/search-jobs
+      posting_url: https://careers.netapp.com/job/<location>/<slug>/<category>/<id>
+      evidence_url: https://careers.netapp.com/job/san-jose/netapp-emerging-talent-entry-level-software-engineer-cloud-storage/27600/93948837168
+    - name: Twilio
+      source_kind: greenhouse
+      render: server_html
+      careers_search_url: https://job-boards.greenhouse.io/twilio
+      posting_url: https://job-boards.greenhouse.io/twilio/jobs/<id>
+      evidence_url: https://job-boards.greenhouse.io/twilio/jobs/7188174
+    - name: HubSpot
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://www.hubspot.com/careers/jobs/all
+      posting_url: https://www.hubspot.com/careers/jobs/<id>
+      evidence_url: https://www.hubspot.com/careers/jobs/5988684
+    - name: MongoDB
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://www.mongodb.com/company/careers
+      posting_url: https://www.mongodb.com/careers/jobs/<id>
+      evidence_url: https://www.mongodb.com/careers/jobs/7644278
+    - name: Zoom
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://careers.zoom.us/jobs/search
+      posting_url: https://careers.zoom.us/jobs/<slug>
+      evidence_url: https://careers.zoom.us/jobs/software-engineer-san-jose-california-united-states-13ee33a1-b634-4b12-a6c5-94b0eb43df14
+    - name: Atlassian
+      source_kind: branded
+      render: server_html
+      careers_search_url: https://www.atlassian.com/company/careers/all-jobs
+      posting_url: https://www.atlassian.com/company/careers/details/<id>
+      evidence_url: https://www.atlassian.com/company/careers/details/25157
+
 job_boards_and_aggregators:
   - name: RemoteOK
     public_data_patterns: [https://remoteok.com/api]
