@@ -10,7 +10,7 @@ Convert the user's raw career materials into two artifacts that every downstream
 - `profiles/<person>/candidate-profile.md` — stable background, strengths, constraints, positioning facts
 - `profiles/<person>/evidence-map.md` — every claim mapped to its source
 
-Work in the recruiting repo root (the folder containing `references/` and `scripts/`); if you can't find it, ask the user. Resolve the active search project via `active-project.json` per `references/project-structure.md` — `<project>` below means that directory, `<person>` the profile dir named in its `project.json`. No project yet? Create one: `python scripts/new_project.py --person <code> --focus <slug>`.
+Work in the recruiting repo root (the folder containing `references/` and `scripts/`); if you can't find it, ask the user. This skill is **person-scoped**: `<person>` is the profile directory under `profiles/`. It must work even when no search project exists yet. Do **not** create a project just to build a profile.
 
 ## Why this matters
 
@@ -22,7 +22,7 @@ The profile is **person-scoped and shared**: one person (folder code like `ck` u
 
 ## Process
 
-1. **Gather inputs.** Resume (any format — extract text), LinkedIn profile (URL, export, or pasted), portfolio links, notes, raw files already in `profiles/<person>/`, and the conversation itself. A resume is helpful but not required: if LinkedIn is the only source, build the profile from captured/current LinkedIn content plus the user's project targets and instructions; leave unavailable facts as Open Questions. Never create a fictional resume or infer missing employers, dates, metrics, immigration facts, compensation facts, or credentials. If the user gave a LinkedIn URL and browser tools are available, read the public page; never log in or edit anything.
+1. **Gather inputs.** Resume (any format — extract text), LinkedIn profile export/paste/current-source handoff, portfolio links, notes, raw files already in `profiles/<person>/`, and the conversation itself. A resume is helpful but not required: if LinkedIn current content is the only source, build the profile from `linkedin-current.md`; leave unavailable facts as Open Questions. A bare LinkedIn URL is only a pointer, not evidence. Never create a fictional resume or infer missing employers, dates, metrics, immigration facts, compensation facts, or credentials. Do not log in to LinkedIn, automate LinkedIn browsing, or edit anything.
 2. **Extract and normalize.** Employers, titles, date ranges (normalize to `YYYY-MM`), locations, education, skills, metrics, links. Flag gaps and overlaps in the timeline rather than smoothing them over.
 3. **Interview for the gaps.** Ask the user the *smallest* set of questions that unblocks downstream work — typically: target roles/geography, remote preference, compensation range, work authorization, timeline, and any claim in their materials that is ambiguous. Don't interrogate; batch questions.
 4. **Write the profile** using the template below.

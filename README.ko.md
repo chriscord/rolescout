@@ -107,13 +107,13 @@ rolescout web
 
 브라우저에서 `http://127.0.0.1:8787` 자동 연결. UI는 loopback 전용이며 호스팅되지 않음.
 
-1. **프로필 — 가장 먼저 생성.** 이름, LinkedIn URL, 이력서 추가. 지원 형식: **PDF, DOCX, Markdown(`.md`), `.txt`**(`.doc` / `.html`도 지원). 필요한 경우 참고 자료 추가. 조사, 평가, 준비는 모두 이 프로필을 기반으로 진행됨.
+1. **프로필 — 가장 먼저 생성.** 이름, LinkedIn URL, 이력서 추가. 지원 형식: **PDF, DOCX, Markdown(`.md`), `.txt`**(`.doc` / `.html`도 지원). 필요한 경우 참고 자료 추가. 프로필 저장 또는 이력서 업로드 후 `profile-intake`가 백그라운드에서 시작되어 `candidate-profile.md`와 `evidence-map.md`를 생성/갱신함. LinkedIn URL은 source pointer일 뿐이며, 실제 LinkedIn 근거는 지원되는 import/capture 경로로 확보된 current content에서만 사용됨.
 
 > **상시 지시사항(선택, 권장).** 프로필에 자유롭게 작성하는 지침으로, RoleScout가 모든 실행에 반영함: 우선순위, 제약 사항, 강조할 점. 승인 경계가 항상 우선하며 RoleScout는 사용자를 대신해 제출하거나 전송하지 않음. 이력서만으로 드러나지 않는 선호, 직접 다뤄야 할 공백기, 강조할 경험, 이주 제한 등을 적어두면 유용함.
 
 2. **프로젝트.** 프로젝트 생성 또는 선택. 프로젝트 1개는 하나의 job search / prep 세션으로 이해하면 됨. 원하는 회사 예시, 직급, 직무, 관심 지역, 연봉 수준, 제외 조건 등 세션 선호사항 자유 설정.
 
-3. **검색.** 화면 오른쪽 Chat session 패널에서 `search` 선택 후 **Run** 실행. 여러 ATS와 회사 채용 페이지를 훑기 때문에 시간이 걸릴 수 있음. 완료 후 Jobs 탭 하위에 조사된 job list 생성. 최초 search run은 현재 이력서/프로필 기준 fit score도 함께 산정함. Jobs 리스트 왼쪽의 별표를 눌러 관심 포지션을 **focused**로 등록.
+3. **검색.** 화면 오른쪽 Chat session 패널에서 `search` 선택 후 **Run** 실행. `profile-intake`가 아직 실행 중이어도 바로 시작 가능하며, profile/evidence map이 준비되기 전의 fit/grouping은 provisional로 표시됨. 여러 ATS와 회사 채용 페이지를 훑기 때문에 시간이 걸릴 수 있음. 완료 후 Jobs 탭 하위에 조사된 job list 생성. 최초 search run은 가능한 경우 현재 이력서/프로필 기준 fit score도 함께 산정함. Jobs 리스트 왼쪽의 별표를 눌러 관심 포지션을 **focused**로 등록.
 
 > **중요.** Prep 계열 명령은 focused 포지션이 1개 이상 있어야 동작함. 이는 관심 있는 포지션을 기준으로 strategy, resume, LinkedIn, interview 준비물을 만드는 의도된 설계임.
 
@@ -139,6 +139,7 @@ web UI가 떠 있을 때도 terminal 유지 필요. web UI는 terminal 실행을
 
 ```bash
 rolescout init --person you --focus ai-product --locations "San Francisco"
+rolescout run profile-intake --person you
 rolescout run search
 rolescout run score
 rolescout run prep
@@ -152,6 +153,7 @@ rolescout run apply
 | 명령 | 예상 결과 |
 |---|---|
 | `rolescout init --person you --focus ai-product --locations "San Francisco"` | 프로필/프로젝트 쌍 생성 또는 활성화. `--companies`, `--role`, `--level`, `--comp-range`, `--negatives`로 프로젝트 선호사항 지정 가능. |
+| `rolescout run profile-intake --person you` | resume/material 및 허용된 LinkedIn current-source content로 `profiles/<person>/candidate-profile.md`, `profiles/<person>/evidence-map.md` 생성 또는 갱신. |
 | `rolescout run search` | opportunity thesis 생성, 관련 출처 조사, Jobs list 작성, 최초 search 후 scoring 1회 실행. |
 | `rolescout run score` | 현재 Jobs list를 활성 프로젝트 선호사항과 scoring model 기준으로 재평가. |
 | `rolescout run prep` | focused 포지션 기준 strategy, resume, LinkedIn, interview 준비 동시 실행. |
@@ -173,6 +175,7 @@ RoleScout는 사용자의 Codex CLI 기본 모델 또는 추론 강도 설정을
 |---|---|---|
 | `search` | `gpt-5.5` | `medium` |
 | `score` | `gpt-5.5` | `medium` |
+| `profile-intake` | `gpt-5.5` | `high` |
 | `prep-strategy` | `gpt-5.5` | `xhigh` |
 | `prep`, `prep-resume`, `prep-linkedin`, `prep-interview` | `gpt-5.5` | `high` |
 | `apply` | `gpt-5.5` | `medium` |

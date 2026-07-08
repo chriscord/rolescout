@@ -64,7 +64,15 @@ def instructions(profile_dir: Path | None) -> str:
 
 
 RESUME_SUFFIXES = {".pdf", ".docx", ".doc", ".md", ".txt", ".html"}
-_GENERATED = {"candidate-profile.md", "evidence-map.md", META_NAME}
+_GENERATED = {
+    "candidate-profile.md",
+    "evidence-map.md",
+    "linkedin-current.md",
+    "linkedin-analysis.md",
+    "story-bank.md",
+    "story-bank.json",
+    META_NAME,
+}
 
 
 def material_files(profile_dir: Path | None) -> list[dict]:

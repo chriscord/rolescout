@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "_notes": {
     "purpose": "RoleScout pins Codex model and reasoning effort per workflow instead of inheriting the user's Codex CLI defaults.",
     "edit": "Change this file after it is copied to ~/.rolescout/model-profiles.json, or set ROLESCOUT_MODEL_PROFILES to another JSON file.",
@@ -12,6 +12,10 @@
       "effort": "medium"
     },
     "workflows": {
+      "profile-intake": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
       "search": {
         "model": "gpt-5.5",
         "effort": "medium"
@@ -56,6 +60,10 @@
       "effort": "medium"
     },
     "workflows": {
+      "profile-intake": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
       "search": {
         "model": "gpt-5.5",
         "effort": "medium"

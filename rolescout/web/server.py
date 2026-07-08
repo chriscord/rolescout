@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlparse
 
 from .. import __version__, core, llm, profile_meta, project_meta
@@ -261,6 +261,76 @@ class RunManager:
 MANAGER = RunManager()
 
 
+class ProfileRunManager:
+    """Background person-scoped intake runs.
+
+    This is deliberately separate from MANAGER: profile intake must not trip the
+    project-level "one run at a time" gate because search/score may start while
+    profile building is still running.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.runs: dict[str, dict] = {}
+
+    def active(self, person: str) -> bool:
+        with self.lock:
+            e = self.runs.get(person)
+            return bool(e and e["status"] == "running")
+
+    def start(self, person: str) -> bool:
+        if not _SLUG.match(person):
+            return False
+        with self.lock:
+            e = self.runs.get(person)
+            if e and e["status"] == "running":
+                return False
+            self.runs[person] = {"person": person, "status": "running",
+                                 "started": time.time(), "summary": "",
+                                 "events": []}
+
+        def worker() -> None:
+            entry = self.runs[person]
+
+            def on_event(kind, text, extra=None):
+                with self.lock:
+                    entry["events"].append({"kind": kind, "text": text,
+                                            "ts": time.strftime("%H:%M:%S")})
+
+            try:
+                rec = workflows.run_profile_intake(person, on_event=on_event)
+                with self.lock:
+                    entry["summary"] = rec.get("summary", "")
+                    entry["status"] = "failed" if rec.get("status") == "failed" else "done"
+            except Exception as e:
+                with self.lock:
+                    entry["summary"] = str(e)
+                    entry["status"] = "failed"
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def summaries(self) -> dict:
+        with self.lock:
+            return {k: {"status": v["status"], "summary": v["summary"],
+                        "started": v["started"]}
+                    for k, v in self.runs.items()}
+
+
+PROFILE_MANAGER = ProfileRunManager()
+
+
+def _maybe_start_profile_intake(person: str) -> bool:
+    pdir = repo_root() / "profiles" / person
+    if not pdir.is_dir():
+        return False
+    has_material = bool(profile_meta.material_files(pdir))
+    has_linkedin_pointer = bool(profile_meta.linkedin_url(pdir))
+    if not (has_material or has_linkedin_pointer):
+        return False
+    return PROFILE_MANAGER.start(person)
+
+
 # ---------------------------------------------------------------- collectors
 
 def _csv_rows(path: Path) -> list[dict]:
@@ -320,6 +390,22 @@ def _pretty_slug(text: str) -> str:
     return " ".join(p.capitalize() for p in re.split(r"[-_]+", text) if p)
 
 
+def _rel_posix(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _safe_project_rel(rel: str) -> tuple[Path, str]:
+    rel_norm = str(rel or "").replace("\\", "/")
+    if re.match(r"^[A-Za-z]:", rel_norm):
+        raise RoleScoutError("path escapes the project")
+    pure = PurePosixPath(rel_norm)
+    if pure.is_absolute() or not pure.parts:
+        raise RoleScoutError("path escapes the project")
+    if any(part in ("", ".", "..") for part in pure.parts):
+        raise RoleScoutError("path escapes the project")
+    return Path(*pure.parts), pure.as_posix()
+
+
 def _prep_artifacts(proj: Path) -> list[dict]:
     # NOTE: prep-resume writes resumes/<group>/resume-draft.md (the validated
     # draft the DOCX is generated from). The legacy resume.md pattern is kept
@@ -343,7 +429,7 @@ def _prep_artifacts(proj: Path) -> list[dict]:
             seen.add((group, kind, target))
             groups.append({"group": group, "kind": kind,
                            "target": target, "label": _pretty_slug(target),
-                           "path": str(f.relative_to(proj)),
+                           "path": _rel_posix(f, proj),
                            "mtime": datetime.fromtimestamp(f.stat().st_mtime)
                            .strftime("%Y-%m-%d %H:%M")})
     return groups
@@ -353,7 +439,7 @@ def _strategy_files(proj: Path) -> list[dict]:
     out = []
     for pattern in ("strategy/*.md", "strategy/*.json", "targets/job-groups/*.md"):
         for f in sorted(proj.glob(pattern)):
-            out.append({"path": str(f.relative_to(proj))})
+            out.append({"path": _rel_posix(f, proj)})
     return out
 
 
@@ -753,6 +839,7 @@ def state() -> dict:
             "persons": profile_meta.list_persons(root),
             "projects": list_projects(),
             "active_run": MANAGER.active_run(),
+            "profile_runs": PROFILE_MANAGER.summaries(),
             "workflows": sorted(workflows.WORKFLOW_SKILLS)}
 
 
@@ -780,7 +867,8 @@ def create_person(payload: dict) -> dict:
         meta["instructions"] = ""
         (pdir / profile_meta.META_NAME).write_text(
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    return {"ok": True, "person": person}
+    started = _maybe_start_profile_intake(person)
+    return {"ok": True, "person": person, "profile_intake_started": started}
 
 
 def create_project(payload: dict) -> dict:
@@ -843,7 +931,9 @@ def save_upload(person: str, filename: str, data: bytes) -> dict:
     if len(data) > 15 * 1024 * 1024:
         raise RoleScoutError("file too large (15MB max)")
     (pdir / name).write_bytes(data)
-    return {"ok": True, "name": name, "size": len(data)}
+    started = _maybe_start_profile_intake(person)
+    return {"ok": True, "name": name, "size": len(data),
+            "profile_intake_started": started}
 
 
 def delete_material(payload: dict) -> dict:
@@ -868,17 +958,20 @@ def delete_material(payload: dict) -> dict:
 
 def read_project_file(code: str, rel: str) -> dict:
     proj = (repo_root() / "projects" / code).resolve()
-    target = (proj / rel).resolve()
-    if not str(target).startswith(str(proj) + "/"):
+    rel_path, rel_display = _safe_project_rel(rel)
+    target = (proj / rel_path).resolve()
+    try:
+        target.relative_to(proj)
+    except ValueError:
         raise RoleScoutError("path escapes the project")
-    if not any(rel.startswith(d + "/") or rel == d for d in PREVIEW_DIRS):
+    if not any(rel_display.startswith(d + "/") or rel_display == d for d in PREVIEW_DIRS):
         raise RoleScoutError("preview limited to project artifact folders")
     if target.suffix.lower() not in PREVIEW_SUFFIXES:
         raise RoleScoutError("preview limited to text artifacts")
     if not target.is_file():
         raise RoleScoutError("file not found")
     text = _decode_best(target.read_bytes())
-    return {"path": rel, "content": text[:40000],
+    return {"path": rel_display, "content": text[:40000],
             "truncated": len(text) > 40000}
 
 

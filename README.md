@@ -112,13 +112,13 @@ rolescout web
 
 The browser opens automatically at `http://127.0.0.1:8787`. The interface is loopback-only and is not hosted.
 
-1. **Profile — create this first.** Add your name, LinkedIn URL, and resume. Supported resume formats: **PDF, DOCX, Markdown (`.md`), or `.txt`** (also `.doc` / `.html`). Add supporting materials when useful. Research, scoring, and preparation all build on this profile.
+1. **Profile — create this first.** Add your name, LinkedIn URL, and resume. Supported resume formats: **PDF, DOCX, Markdown (`.md`), or `.txt`** (also `.doc` / `.html`). Add supporting materials when useful. Saving the profile or uploading a resume starts `profile-intake` in the background: it builds `candidate-profile.md` and `evidence-map.md` before prep workflows consume them. A LinkedIn URL is a pointer only; current LinkedIn evidence must come from the supported import/capture path.
 
 > **Standing instructions (optional, recommended).** Free-text guidance in your Profile that RoleScout injects into every run: your priorities, constraints, and what to emphasize. Approval boundaries always win over it; RoleScout never submits or sends anything on your behalf. Use it for preferences that are not obvious from the resume, such as gaps to address directly, experiences to emphasize, or relocation constraints.
 
 2. **Projects.** Create or select a project. Treat one project as one job-search and preparation session. Set the session preferences freely: example companies, target role, level, target location, compensation range, exclusions, and any other constraints that should guide the search.
 
-3. **Search.** Use the chat session panel on the right to choose `search`, then click **Run**. This can take time because RoleScout checks many ATS and company-career sources. When the run finishes, the Jobs tab contains the researched job list. The first search run also scores fit against the current resume/profile. Star positions on the left side of the job list to register them as **focused** positions.
+3. **Search.** Use the chat session panel on the right to choose `search`, then click **Run**. This can start even while `profile-intake` is still running; fit/grouping is marked provisional until the profile and evidence map are ready. This can take time because RoleScout checks many ATS and company-career sources. When the run finishes, the Jobs tab contains the researched job list. The first search run also scores fit against the current resume/profile when available. Star positions on the left side of the job list to register them as **focused** positions.
 
 > **Important.** Prep commands require at least one focused position. This is intentional: they prepare strategy, resume, LinkedIn, and interview materials for positions you have chosen to pursue.
 
@@ -144,6 +144,7 @@ Every CLI command uses the active profile and project unless you pass `--project
 
 ```bash
 rolescout init --person you --focus ai-product --locations "San Francisco"
+rolescout run profile-intake --person you
 rolescout run search
 rolescout run score
 rolescout run prep
@@ -157,6 +158,7 @@ rolescout run apply
 | Command | Expected outcome |
 |---|---|
 | `rolescout init --person you --focus ai-product --locations "San Francisco"` | Creates or activates a profile/project pair. Use `--companies`, `--role`, `--level`, `--comp-range`, and `--negatives` to set project preferences from the command line. |
+| `rolescout run profile-intake --person you` | Builds or refreshes `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` from resume/materials and accepted LinkedIn current-source content. |
 | `rolescout run search` | Builds the opportunity thesis, searches relevant sources, writes the Jobs list, and runs scoring once after the first search. |
 | `rolescout run score` | Recomputes fit and priority for the current Jobs list using the active project preferences and scoring model. |
 | `rolescout run prep` | Runs strategy, resume, LinkedIn, and interview preparation for focused positions. |
@@ -178,6 +180,7 @@ Default profiles:
 |---|---|---|
 | `search` | `gpt-5.5` | `medium` |
 | `score` | `gpt-5.5` | `medium` |
+| `profile-intake` | `gpt-5.5` | `high` |
 | `prep-strategy` | `gpt-5.5` | `xhigh` |
 | `prep`, `prep-resume`, `prep-linkedin`, `prep-interview` | `gpt-5.5` | `high` |
 | `apply` | `gpt-5.5` | `medium` |

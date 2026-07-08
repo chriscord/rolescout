@@ -16,6 +16,7 @@ Do not generate reviews from local profile/resume/evidence alone. Those files ar
 Accepted current-source inputs:
 
 - `profiles/<person>/linkedin-current.md` produced fresh by the RoleScout runner during this same run.
+- `profiles/<person>/linkedin-current.md` imported from an official/user-provided LinkedIn export or paste during profile intake.
 
 The runner performs fresh capture before the agent starts. The agent must not perform capture again:
 
@@ -28,7 +29,7 @@ If the fresh handoff file is missing, empty, or clearly not LinkedIn profile tex
 
 `ERROR: LinkedIn capture handoff missing after runner capture`
 
-Do not tell the user to provide profile text manually.
+For focused prep, do not use a bare LinkedIn URL as a substitute for current content. If current content is missing, ask the user to complete the supported LinkedIn import/capture path first.
 
 Never type credentials, never change LinkedIn fields, never save edits, never message, and never continue with a "local evidence proxy" review.
 

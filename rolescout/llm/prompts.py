@@ -21,6 +21,20 @@ HEADLESS RUN CONTRACT (rolescout CLI):
 - Task focus: {task}
 """
 
+PROFILE_RUN_CONTRACT = """
+HEADLESS PROFILE-INTAKE CONTRACT (rolescout CLI):
+- Work ONLY on the candidate profile directory at: {profile_dir}
+- This workflow is person-scoped. Do not create or require a search project,
+  job_list, focused-jobs.json, strategy artifacts, resumes, LinkedIn review
+  packets, interview packs, or application tracker rows.
+- Produce or refresh `candidate-profile.md` and `evidence-map.md` in that
+  profile directory from the available local materials and accepted LinkedIn
+  current-source handoff when present.
+- NEVER invent employers, dates, degrees, credentials, metrics, compensation,
+  work authorization, or preferences. Unsupported facts become Open Questions.
+- Task focus: {task}
+"""
+
 
 def workflow_prompt(workflow: str, context: dict) -> str:
     root = repo_root()
@@ -55,24 +69,35 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "- Do not invent candidate credentials, employers, dates, achievements, "
                    "metrics, immigration facts, compensation facts, or preferences. Label "
                    "profile-dependent fit, grouping, and scoring as provisional until "
-                   "`rolescout run prep` builds candidate-profile.md and evidence-map.md.\n"
-                   "- For prep and prep-resume workflows, build candidate-profile.md and "
-                   "evidence-map.md first from the available resume/materials or LinkedIn "
-                   "URL/content; if facts are unavailable, leave open questions instead "
-                   "of creating a fictional resume.")
+                   "`rolescout run profile-intake --person <person>` builds "
+                   "candidate-profile.md and evidence-map.md.\n"
+                   "- Focused prep workflows must not build the profile. If this is a "
+                   "prep workflow, stop and tell the user to run profile-intake first.")
     if context.get("profile_stale"):
         extras += ("\n\n## PROFILE REBUILD REQUIRED FIRST (hard prerequisite)\n"
                    f"- `{context['profile_stale']}` in the profile folder is NEWER than "
                    "candidate-profile.md — the profile and evidence map are STALE.\n"
                    "- BEFORE any tailoring or scoring, rebuild BOTH candidate-profile.md "
-                   "and evidence-map.md from the updated materials per the "
+                   "and evidence-map.md with `rolescout run profile-intake --person "
+                   "<person>` from the updated materials per the "
                    "candidate-profile-builder refresh semantics (treat the newest resume "
                    "as the current baseline; keep stable EV- IDs; mark superseded claims; "
                    "bump the Updated stamp).\n"
                    "- Then regenerate downstream artifacts from the REFRESHED evidence "
                    "map — never reuse content that only exists in previous run outputs.\n"
-                   "- The runner verifies afterwards that candidate-profile.md is newer "
-                   "than every material file; skipping the rebuild fails the run.")
+                   "- Search/score may continue provisionally; focused prep must stop "
+                   "until profile-intake has refreshed the profile.")
+    if workflow == "profile-intake":
+        extras += ("\n\n## Profile intake lane\n"
+                   "- Build or refresh only person-scoped artifacts in the profile dir: "
+                   "`candidate-profile.md`, `evidence-map.md`, and a baseline "
+                   "`linkedin-analysis.md` when `linkedin-current.md` exists.\n"
+                   "- Use `linkedin-current.md` only when it exists and contains visible "
+                   "profile content; a bare LinkedIn URL is a pointer, not evidence.\n"
+                   "- Do not create a project if none exists. Do not touch job search, "
+                   "focused prep, applications, or tracker artifacts.\n"
+                   "- If LinkedIn content is missing, continue from resume/materials and "
+                   "list LinkedIn-dependent facts as Open Questions.")
     extras += ("\n\n## Research tooling\n"
                "- For plain public JSON/HTML fetches use `python scripts/fetch_url.py "
                "<url>` (stdlib urllib, UTF-8 output). Do NOT assume `requests` is "
@@ -237,9 +262,15 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "- Compliance: browse at human pace inside the user's own logged-in "
                    "session, only what the user could see themselves; no bulk "
                    "scraping/exports; respect site terms.")
+    if workflow == "profile-intake":
+        contract = PROFILE_RUN_CONTRACT.format(
+            profile_dir=context.get("profile_dir") or context["project"],
+            task=context.get("task") or "(default per skill)")
+    else:
+        contract = RUN_CONTRACT.format(project=context["project"],
+                                       task=context.get("task") or "(default per skill)")
     return (
         f"Execute the '{workflow}' recruiting workflow using the skill(s) below.\n"
-        + RUN_CONTRACT.format(project=context["project"],
-                              task=context.get("task") or "(default per skill)")
+        + contract
         + extras
         + "\n--- SKILLS ---\n" + skill_text)

@@ -11,7 +11,7 @@ from typing import Any
 from ..paths import RoleScoutError, home_dir
 
 CONFIG_FILE = "model-profiles.json"
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 ALLOWED_CODEX_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 FALLBACK_PROFILES: dict[str, Any] = {
@@ -19,6 +19,7 @@ FALLBACK_PROFILES: dict[str, Any] = {
     "codex": {
         "default": {"model": "gpt-5.5", "effort": "medium"},
         "workflows": {
+            "profile-intake": {"model": "gpt-5.5", "effort": "high"},
             "search": {"model": "gpt-5.5", "effort": "medium"},
             "score": {"model": "gpt-5.5", "effort": "medium"},
             "prep": {"model": "gpt-5.5", "effort": "high"},
@@ -33,6 +34,7 @@ FALLBACK_PROFILES: dict[str, Any] = {
     "external_cli": {
         "default": {"model": "gpt-5.5", "effort": "medium"},
         "workflows": {
+            "profile-intake": {"model": "gpt-5.5", "effort": "high"},
             "search": {"model": "gpt-5.5", "effort": "medium"},
             "score": {"model": "gpt-5.5", "effort": "medium"},
             "prep": {"model": "gpt-5.5", "effort": "high"},
@@ -103,6 +105,7 @@ def _migrate_known_defaults(custom: dict[str, Any]) -> tuple[dict[str, Any], boo
         prep_strategy = workflows.get("prep-strategy")
         if isinstance(prep_strategy, dict) and prep_strategy.get("effort") == "high":
             prep_strategy["effort"] = "xhigh"
+        workflows.setdefault("profile-intake", {"model": "gpt-5.5", "effort": "high"})
     migrated["version"] = CURRENT_VERSION
     return migrated, migrated != custom
 

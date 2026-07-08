@@ -13,6 +13,12 @@ import sys
 from . import CLI_NAME, PRODUCT_NAME, __version__
 from .paths import RoleScoutError
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except AttributeError:
+    pass
+
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -43,10 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="environment & install health check")
 
     p = sub.add_parser("run", help="run a workflow headlessly")
-    p.add_argument("workflow", choices=["search", "score", "prep",
+    p.add_argument("workflow", choices=["profile-intake", "search", "score", "prep",
                                         "prep-strategy", "prep-resume", "prep-linkedin",
                                         "prep-interview", "apply"])
     p.add_argument("--project", help="project code (default: active project)")
+    p.add_argument("--person", help="person code for profile-intake")
     p.add_argument("--task", help="free-text task focus passed to the workflow")
     p.add_argument("--mock", action="store_true", help="force mock mode (LLM_MOCK=1)")
     p.add_argument("--provider", choices=["codex", "cli", "mock"],

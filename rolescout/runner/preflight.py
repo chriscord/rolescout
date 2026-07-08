@@ -1,8 +1,8 @@
-"""Preflight readiness checks for live workflow runs (profile intake first!).
+"""Preflight readiness checks for live workflow runs.
 
-The workflow order matters (AGENTS.md: profile → research → … ). A live `run
-search` without a candidate profile produces ungrounded garbage, so the CLI
-checks prerequisites BEFORE spending the user's tokens/subscription:
+Profile intake is person-scoped. Search/score may proceed provisionally while
+profile-intake is missing or running; focused prep workflows consume the
+candidate profile/evidence map and never rebuild it themselves.
 
   blocking  — missing inputs the workflow cannot work without (refuse + guide)
   warning   — quality risks the user may knowingly accept (print + continue)
@@ -33,11 +33,19 @@ def profile_dir(project: Path) -> Path | None:
             pass
     candidates = [project / "profile"]
     if rel:
-        candidates += [Path(rel), repo_root() / rel, project / rel]
+        rel_path = Path(rel)
+        if rel_path.is_absolute():
+            candidates.append(rel_path)
+        else:
+            candidates += [repo_root() / rel_path, project / rel_path]
     for c in candidates:
         if c.is_dir():
             return c
     return None
+
+
+def _looks_like_profile_dir(path: Path) -> bool:
+    return path.is_dir() and (path / "profile-meta.json").exists()
 
 
 def _has_profile(pdir: Path | None) -> tuple[bool, bool]:
@@ -51,8 +59,15 @@ def _has_profile(pdir: Path | None) -> tuple[bool, bool]:
 def _has_materials(pdir: Path | None) -> bool:
     if pdir is None:
         return False
-    return any(f.suffix.lower() in MATERIAL_SUFFIXES and f.name != "candidate-profile.md"
-               and f.name != "evidence-map.md"
+    generated = {
+        "candidate-profile.md",
+        "evidence-map.md",
+        "linkedin-current.md",
+        "linkedin-analysis.md",
+        "story-bank.md",
+        "story-bank.json",
+    }
+    return any(f.suffix.lower() in MATERIAL_SUFFIXES and f.name not in generated
                for f in pdir.iterdir() if f.is_file())
 
 
@@ -68,9 +83,16 @@ def _stale_profile(pdir: Path | None) -> str:
         return ""
     prof_m = prof.stat().st_mtime
     newest, name = prof_m, ""
-    # generated artifacts are not user materials: linkedin-current.md is the
-    # runner's fresh capture handoff, rewritten on every prep-linkedin run
-    generated = ("candidate-profile.md", "evidence-map.md", "linkedin-current.md")
+    # generated artifacts are not user materials: these are rewritten by
+    # profile/prep workflows and must not create a profile rebuild loop.
+    generated = {
+        "candidate-profile.md",
+        "evidence-map.md",
+        "linkedin-current.md",
+        "linkedin-analysis.md",
+        "story-bank.md",
+        "story-bank.json",
+    }
     for f in pdir.iterdir():
         if (f.is_file() and f.suffix.lower() in MATERIAL_SUFFIXES
                 and f.name not in generated):
@@ -91,7 +113,7 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
     """Returns (blocking, warnings) — human-readable, with the fix in the message."""
     blocking: list[str] = []
     warnings: list[str] = []
-    pdir = profile_dir(project)
+    pdir = project if workflow == "profile-intake" and _looks_like_profile_dir(project) else profile_dir(project)
     has_prof, has_ev = _has_profile(pdir)
     from ..profile_meta import linkedin_url
     has_linkedin = bool(linkedin_url(pdir))
@@ -99,31 +121,26 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
     has_source = has_materials or has_linkedin
     where = pdir if pdir is not None else f"{project}/profile (or project.json profile_dir)"
 
-    if workflow == "prep":
-        if not has_prof and not has_source:
+    if workflow == "profile-intake":
+        if not has_source:
             blocking.append(
-                f"no candidate profile AND no source materials in {where} — drop your "
-                "resume/notes (md/pdf/docx…) there or add a LinkedIn URL; the prep "
-                "workflow's candidate-profile-builder will build the profile from them")
+                f"no source materials in {where} — add a resume/material file or "
+                "LinkedIn URL before profile-intake can build candidate-profile.md "
+                "+ evidence-map.md")
         elif not has_prof:
-            source = "LinkedIn URL" if has_linkedin and not has_materials else "materials"
-            warnings.append(f"no candidate-profile.md yet — prep will build it from your "
-                            f"{source} before tailoring anything")
-        if not has_linkedin:
-            warnings.append("no LinkedIn source URL — the prep-linkedin step captures "
-                            "fresh from the profile URL every run")
+            warnings.append("candidate-profile.md missing — profile-intake will build "
+                            "candidate-profile.md + evidence-map.md from available "
+                            "materials and will leave unsupported claims as open questions")
+        elif not has_ev:
+            warnings.append("evidence-map.md missing — profile-intake will rebuild it")
     else:
         if not has_prof:
             if workflow in ("search", "score"):
                 warnings.append(
                     f"candidate-profile.md missing in {where} — proceeding with project "
                     "targets and available LinkedIn/source hints only; grouping and scoring "
-                    "are provisional until `rolescout run prep` builds the evidence map")
-            elif workflow in ("prep-resume", "prep-linkedin") and has_source:
-                warnings.append(
-                    f"candidate-profile.md missing in {where} — '{workflow}' may proceed "
-                    "from the available LinkedIn/source material, but all candidate claims "
-                    "must stay sourced or labeled as open questions")
+                    "are provisional until profile-intake builds candidate-profile.md "
+                    "+ evidence-map.md")
             elif workflow == "apply":
                 warnings.append(
                     f"candidate-profile.md missing in {where} — '{workflow}' may proceed "
@@ -132,34 +149,40 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
                 blocking.append(
                     f"candidate-profile.md missing in {where} — the '{workflow}' workflow needs "
                     "a truthful profile to ground decisions. Fix: add a resume/materials or "
-                    "LinkedIn URL and run `rolescout run prep` (profile intake) first")
+                    "LinkedIn URL and run `rolescout run profile-intake --person <person>` first")
         elif not has_ev:
-            warnings.append("evidence-map.md missing — claims can't be evidence-checked; "
-                            "`rolescout run prep` builds it")
+            if workflow in ("search", "score", "apply"):
+                warnings.append("evidence-map.md missing — claims can't be evidence-checked; "
+                                "run profile-intake to rebuild it")
+            else:
+                blocking.append("evidence-map.md missing — focused prep requires an "
+                                "evidence map. Run `rolescout run profile-intake "
+                                "--person <person>` first")
 
     stale = _stale_profile(pdir)
     if stale and has_prof:
-        if workflow in ("prep", "prep-resume"):
+        if workflow == "profile-intake":
             warnings.append(
                 f"'{stale}' is newer than candidate-profile.md — the profile/evidence map "
-                "are stale; this run's profile-builder step MUST rebuild them from the "
-                "updated materials before tailoring (the runner verifies this after the run)")
-        elif workflow in ("search", "score", "prep-strategy", "prep-linkedin",
+                "are stale; profile-intake must rebuild them from the updated materials")
+        elif workflow in ("search", "score"):
+            warnings.append(
+                f"'{stale}' is newer than candidate-profile.md — proceeding provisionally "
+                "from project targets and current job evidence; run profile-intake to "
+                "refresh candidate-profile.md + evidence-map.md, then rerun score")
+        elif workflow in ("prep", "prep-strategy", "prep-resume", "prep-linkedin",
                           "prep-interview"):
-            # these chains cannot rebuild the profile — running them would
-            # silently ground every output on the OLD resume (observed failure)
             blocking.append(
                 f"'{stale}' is newer than candidate-profile.md — '{workflow}' cannot "
                 "rebuild the profile and would ground on the OLD materials. Fix: run "
-                "`rolescout run prep-resume` (or prep) first; its profile-builder step "
-                "rebuilds candidate-profile.md + evidence-map.md from the new resume")
+                "`rolescout run profile-intake --person <person>` first; profile-intake "
+                "rebuilds candidate-profile.md + evidence-map.md from the new materials")
         else:
             warnings.append(
                 f"'{stale}' is newer than candidate-profile.md — the profile/evidence map "
-                f"are STALE; run `rolescout run prep` (or prep-resume) first so '{workflow}' "
-                "grounds on the updated materials")
+                f"are STALE; run profile-intake before relying on candidate facts")
 
-    if workflow in ("prep-strategy", "prep-resume", "prep-linkedin", "prep-interview"):
+    if workflow in ("prep", "prep-strategy", "prep-resume", "prep-linkedin", "prep-interview"):
         fj = project / "data" / "focused-jobs.json"
         n_focused = 0
         try:

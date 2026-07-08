@@ -23,7 +23,7 @@ Read before drafting:
 - `<project>/targets/job-groups/<group>.md`
 - JD snapshots for every focused job in the group under `<project>/targets/jobs/*.json`
 
-If candidate profile or evidence map is missing, run `candidate-profile-builder` first. Tailoring without an evidence map is a fabrication risk.
+If candidate profile or evidence map is missing, stop and tell the user to run `rolescout run profile-intake --person <person>` first. Tailoring without an evidence map is a fabrication risk; this skill consumes the profile and evidence map, it does not create them.
 
 ## Step 0 - Cross-source recency & discrepancy check
 
