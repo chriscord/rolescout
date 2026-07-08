@@ -1,0 +1,9 @@
+{
+  "workflow": "search",
+  "model_config": {"provider": "mock", "model": "canned-envelope-v2"},
+  "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "num_turns": 0},
+  "events": [
+    {"type": "progress", "text": "Synthetic mock search envelope loaded."},
+    {"type": "result", "summary": "mock search completed with synthetic output."}
+  ]
+}

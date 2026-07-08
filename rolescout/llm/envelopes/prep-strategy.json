@@ -1,0 +1,13 @@
+{
+  "workflow": "prep-strategy",
+  "model_config": {"provider": "mock", "model": "canned-envelope-v2"},
+  "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "num_turns": 0},
+  "events": [
+    {
+      "type": "artifact",
+      "path": "strategy/prep-strategy.md",
+      "text": "# Mock Prep Strategy\n\nSynthetic mock-mode strategy artifact. Do not use for real recruiting decisions.\n"
+    },
+    {"type": "result", "summary": "mock prep-strategy completed with synthetic output."}
+  ]
+}

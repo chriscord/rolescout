@@ -1,7 +1,7 @@
 # ============================================================
 # RoleScout .gitignore — public GitHub distribution
 # Rule of thumb: ship the product (code, skills, scripts,
-# references, tests, benchmarks); never ship a person's career
+# references, benchmarks); never ship a person's career
 # data or anything a run/build regenerates.
 # ============================================================
 
@@ -23,6 +23,12 @@ app/
 /STATUS.md
 /docs/plan/
 /docs/spec/dev-plan.md
+
+# ---- local-only QA/test harnesses ----
+/tests/
+/scripts/qa/
+/qa/
+/rolescout.local.env
 
 # ---- local reference material (not part of the product) ----
 docs/reference/

@@ -1,0 +1,8 @@
+{
+  "workflow": "prep-interview",
+  "model_config": {"provider": "mock", "model": "canned-envelope-v2"},
+  "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "num_turns": 0},
+  "events": [
+    {"type": "result", "summary": "mock prep-interview completed with synthetic output."}
+  ]
+}

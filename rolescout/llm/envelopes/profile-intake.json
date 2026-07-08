@@ -1,0 +1,18 @@
+{
+  "workflow": "profile-intake",
+  "model_config": {"provider": "mock", "model": "canned-envelope-v2"},
+  "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "num_turns": 0},
+  "events": [
+    {
+      "type": "artifact",
+      "path": "candidate-profile.md",
+      "text": "# Candidate Profile - Example Candidate\n\nSynthetic mock-mode profile. Do not use for real recruiting decisions.\n"
+    },
+    {
+      "type": "artifact",
+      "path": "evidence-map.md",
+      "text": "# Evidence Map - Example Candidate\n\n| ID | Claim | Source | Confidence |\n|---|---|---|---|\n| EV-001 | Mock workflow generated a profile artifact. | synthetic fixture | high |\n"
+    },
+    {"type": "result", "summary": "mock profile-intake completed."}
+  ]
+}

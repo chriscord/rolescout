@@ -1249,7 +1249,11 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
 
         ctx.check_cancelled()
         stale_material = _pf._stale_profile(pdir) if pdir else ""
-        if workflow == "prep":
+        if mode == "mock":
+            envelope = _execute_subagent(
+                ctx, provider, workflow,
+                _provider_context(workflow, stale_material), _on_stream)
+        elif workflow == "prep":
             envelope = _run_prep_orchestration(
                 ctx, provider, _provider_context, stale_material,
                 _on_stream, pdir, linkedin_source)
@@ -1275,7 +1279,7 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
             _retry_interview_quality_if_needed(
                 ctx, provider, _provider_context, stale_material,
                 _on_stream, envelope)
-        if not ctx.blocked_reasons:
+        if mode != "mock" and not ctx.blocked_reasons:
             _post_run_checks(ctx)
     except RunCancelled:
         ctx.failure_class = "cancelled"
