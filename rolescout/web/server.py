@@ -331,6 +331,25 @@ def _maybe_start_profile_intake(person: str) -> bool:
     return PROFILE_MANAGER.start(person)
 
 
+def start_profile_intake(payload: dict) -> dict:
+    """Explicit profile rebuild action for Profile/Fix-profile UI controls."""
+    person = str(payload.get("person", "")).strip()
+    if not _SLUG.match(person):
+        raise RoleScoutError("person code must be a lowercase slug (a-z, 0-9, hyphen)")
+    pdir = repo_root() / "profiles" / person
+    if not pdir.is_dir():
+        raise RoleScoutError(f"person '{person}' has no profile folder yet")
+    has_material = bool(profile_meta.material_files(pdir))
+    has_linkedin_pointer = bool(profile_meta.linkedin_url(pdir))
+    if not (has_material or has_linkedin_pointer):
+        raise RoleScoutError("add resume/materials or LinkedIn URL before rebuilding profile")
+    started = PROFILE_MANAGER.start(person)
+    status = "running" if PROFILE_MANAGER.active(person) else (
+        PROFILE_MANAGER.summaries().get(person, {}).get("status", "idle"))
+    return {"ok": True, "person": person, "profile_intake_started": started,
+            "status": status}
+
+
 # ---------------------------------------------------------------- collectors
 
 def _csv_rows(path: Path) -> list[dict]:
@@ -1083,6 +1102,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/profile":
             return self._guard(create_person, payload)
+        if url.path == "/api/profile/intake":
+            return self._guard(start_profile_intake, payload)
         if url.path == "/api/profile/material/delete":
             return self._guard(delete_material, payload)
         if url.path == "/api/projects":

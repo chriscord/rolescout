@@ -138,10 +138,18 @@ background:var(--surface); border-radius:0 8px 8px 0; font-size:.85rem; }
 .inbox-item.run-done { border-left-color:var(--green); } .inbox-item.run-failed { border-left-color:var(--red); }
 .inbox-item.run-cancelled { border-left-color:var(--muted); }
 .inbox-item .k { font-size:.68rem; text-transform:uppercase; color:var(--muted); }
+.inline-fix { min-height:26px; padding:.22em .65em; margin-left:.45rem; font-size:.74rem; }
 .filelist a { display:block; padding:.3rem 0; font-size:.85rem; border-bottom:1px dashed var(--border); }
 .matrow { display:flex; align-items:center; justify-content:space-between; gap:.5rem;
 padding:.3rem 0; font-size:.85rem; border-bottom:1px dashed var(--border); }
 .matrow button.mini { font-size:.68rem; padding:.18em .6em; flex:0 0 auto; }
+.profile-run-status { margin-top:.55rem; color:var(--muted); font-size:.82rem; min-height:1.35rem; }
+.inline-dots { display:inline-flex; gap:.18rem; margin-left:.2rem; vertical-align:middle; }
+.inline-dots span { width:.28rem; height:.28rem; border-radius:50%; background:currentColor;
+opacity:.35; animation:dotBlink 1.2s infinite; }
+.inline-dots span:nth-child(2) { animation-delay:.18s; }
+.inline-dots span:nth-child(3) { animation-delay:.36s; }
+@keyframes dotBlink { 50% { opacity:1; transform:translateY(-1px); } }
 pre.preview { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
 padding:.8rem 1rem; font-size:.8rem; overflow:auto; max-height:480px; white-space:pre-wrap; }
 
@@ -190,6 +198,13 @@ font-family:-apple-system,sans-serif; font-size:.82rem; line-height:1.45; }
 .msg.error { color:#e07b7b; } .msg.result,.msg.done { color:#a3be8c; }
 .msg .chip { display:inline-block; border:1px solid var(--panel-border); border-radius:4px;
 padding:0 .4em; margin-right:.45em; font-size:.62rem; text-transform:uppercase; color:var(--panel-muted); }
+.msg.activity-indicator { color:var(--panel-muted); }
+.msg.activity-indicator .chip { border-color:#4b5563; }
+.typing-dots { display:inline-flex; gap:.22rem; margin-left:.4rem; vertical-align:middle; }
+.typing-dots span { width:.3rem; height:.3rem; border-radius:50%; background:currentColor;
+opacity:.35; animation:dotBlink 1.2s infinite; }
+.typing-dots span:nth-child(2) { animation-delay:.18s; }
+.typing-dots span:nth-child(3) { animation-delay:.36s; }
 .acompose { border-top:1px solid var(--panel-border); padding:.6rem .7rem; }
 .acompose .chips { display:flex; flex-wrap:wrap; gap:.3rem; margin-bottom:.45rem; }
 .acompose .chips button { background:var(--panel-2); border:1px solid var(--panel-border);
@@ -207,7 +222,7 @@ padding:.5em 1em; font-family:-apple-system,sans-serif; min-width:72px; }
 .acompose .send:hover { background:var(--brand-hover); border-color:var(--brand-hover); }
 .acompose .send:disabled { opacity:.4; }
 .acompose .send.stop, button.send.stop { background:var(--red); border-color:var(--red); }
-.stop-ico { display:inline-block; transform:scale(3); transform-origin:center; line-height:1; }
+.stop-ico { display:inline-block; transform:scale(2.4); transform-origin:center; line-height:1; }
 .apCard { background:var(--warn-bg); border:1px solid var(--accent); border-radius:8px;
 padding:.7rem .8rem; margin:.5rem 0; font-family:-apple-system,sans-serif; }
 .apCard pre { background:var(--panel-2); border:1px solid var(--panel-border); color:var(--panel-text);
@@ -396,10 +411,12 @@ padding-bottom:.25rem; color:var(--text); }
 
 <script>
 /* ---------------- state ---------------- */
-let S = {persons:[], projects:[], workflows:[], backend:'mock', active_run:null};
+let S = {persons:[], projects:[], workflows:[], backend:'mock', active_run:null, profile_runs:{}};
 let P = null, tab = 'inbox', wfSel = 'search';
 let archMode = false, archSel = new Set();
 let currentRid = null, seen = 0, poller = null;
+let profilePoller = null;
+const PROJECT_WORKFLOW_HIDDEN = new Set(['profile-intake']);
 let tableState = {
   list: {sort:'score', dir:'desc', filters:{location:'', group:'', priority:''}},
   tracker: {sort:'last_updated', dir:'desc', filters:{status:'', group:''}},
@@ -428,6 +445,9 @@ const esc = s => { const d=document.createElement('span'); d.textContent=s??''; 
 async function api(path, opts){ const r = await fetch(path, Object.assign({cache:'no-store'}, opts)); return r.json(); }
 async function post(path, obj){ return api(path,{method:'POST',
   headers:{'Content-Type':'application/json'}, body:JSON.stringify(obj)}); }
+function updateBackendBadge(){
+  const b=$('backend'); if (b){ b.textContent=S.backend; b.className='badge'+(S.backend==='mock'?' mock':''); }
+}
 
 /* tiny markdown renderer (headings, lists, bold/italic/code, links, quotes, tables, hr) */
 function mdToHtml(md){
@@ -466,7 +486,7 @@ function mdToHtml(md){
 
 async function refresh(){
   S = await api('/api/state');
-  const b=$('backend'); b.textContent=S.backend; b.className='badge'+(S.backend==='mock'?' mock':'');
+  updateBackendBadge();
   route();
 }
 
@@ -486,6 +506,7 @@ function route(){
 /* ---------------- projects list ---------------- */
 function renderProjects(){
   stopPolling();
+  stopProfilePolling();
   $('view').className = '';
   const act = S.projects.filter(p=>!p.archived), arch = S.projects.filter(p=>p.archived);
   const archBtnLabel = !archMode ? 'Archive' : (archSel.size ? `Archive all ${archSel.size}` : 'Cancel');
@@ -555,8 +576,52 @@ async function createProject(){
 }
 
 /* ---------------- profile ---------------- */
+function profileRunStatus(person){
+  return ((S.profile_runs || {})[person]) || null;
+}
+function animatedDots(cls='inline-dots'){
+  return `<span class="${cls}"><span></span><span></span><span></span></span>`;
+}
+function renderProfileRunStatus(){
+  const p = currentPerson();
+  const el = $('pf_run_status');
+  const btn = $('pf_rebuild');
+  if (!el || !btn) return;
+  if (!p){
+    btn.disabled = true;
+    el.textContent = 'save the person before rebuilding profile artifacts';
+    return;
+  }
+  const st = profileRunStatus(p.person);
+  const running = !!st && st.status === 'running';
+  btn.disabled = running;
+  btn.innerHTML = running ? `Rebuilding profile ${animatedDots()}` : 'Rebuild profile';
+  if (!st){
+    el.textContent = p.has_profile ? 'candidate profile exists' : 'candidate profile not built yet';
+  } else if (running){
+    el.innerHTML = `profile-intake running ${animatedDots()}`;
+  } else {
+    el.textContent = st.summary ? `${st.status}: ${st.summary}` : `profile-intake ${st.status}`;
+  }
+}
+async function refreshProfileRunState(){
+  S = await api('/api/state');
+  updateBackendBadge();
+  renderProfileRunStatus();
+}
+function startProfilePolling(){
+  stopProfilePolling();
+  profilePoller = setInterval(async ()=>{
+    if ((location.hash || '') !== '#/profile'){ stopProfilePolling(); return; }
+    await refreshProfileRunState();
+  }, 2000);
+}
+function stopProfilePolling(){
+  if (profilePoller){ clearInterval(profilePoller); profilePoller=null; }
+}
 function renderProfile(){
   stopPolling();
+  startProfilePolling();
   $('view').className = '';
   const opts = S.persons.map(p=>`<option value="${p.person}">${esc(p.name||p.person)} (${p.person})</option>`).join('')
     + `<option value="__new__">+ new person…</option>`;
@@ -573,8 +638,11 @@ function renderProfile(){
         <label>standing instructions <span class="muted">(injected into every run — tone,
         priorities, constraints; approval boundaries always win)</span></label>
         <textarea id="pf_inst" placeholder="e.g. Prefer companies with strong AI teams. Never consider relocation. Write in concise English."></textarea>
-        <div style="margin-top:.9rem"><button class="primary" onclick="saveProfile()">Save profile</button>
+        <div style="margin-top:.9rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
+        <button class="primary" onclick="saveProfile()">Save profile</button>
+        <button id="pf_rebuild" onclick="rebuildProfile()">Rebuild profile</button>
         <span class="muted" id="pf_msg"></span></div>
+        <div id="pf_run_status" class="profile-run-status"></div>
       </div>
     </div><div>
       <div class="card">
@@ -603,6 +671,7 @@ function fillProfile(){
         <button class="mini deny" title="delete this file from the local profiles folder"
           onclick="removeMaterial('${esc(f.name)}')">Remove</button></div>`).join('')
     : '<span class="muted">no materials yet</span>';
+  renderProfileRunStatus();
 }
 async function removeMaterial(name){
   const p = currentPerson();
@@ -617,8 +686,9 @@ async function saveProfile(){
   const person = p ? p.person : $('pf_code').value.trim();
   const res = await post('/api/profile', {person, name:$('pf_name').value,
     linkedin_url:$('pf_li').value, instructions:$('pf_inst').value});
-  $('pf_msg').textContent = res.error ? res.error : ' saved ✓';
-  if (!res.error){ await refresh(); if(!p){ $('pf_sel').value = person; } fillProfile(); }
+  if (res.error){ $('pf_msg').textContent = res.error; return; }
+  await refresh(); $('pf_sel').value = person; fillProfile();
+  $('pf_msg').textContent = res.profile_intake_started ? ' saved; profile build started' : ' saved';
 }
 async function uploadResume(){
   const p = currentPerson();
@@ -629,8 +699,21 @@ async function uploadResume(){
   for (const f of files) fd.append('file-'+f.name, f, f.name);
   const r = await fetch('/api/profile/resume', {method:'POST', body:fd, cache:'no-store'});
   const res = await r.json();
-  $('pf_upmsg').textContent = res.error ? res.error : ` uploaded ${res.files.length} file(s) ✓`;
-  if (!res.error){ await refresh(); fillProfile(); }
+  if (res.error){ $('pf_upmsg').textContent = res.error; return; }
+  await refresh(); $('pf_sel').value = p.person; fillProfile();
+  const started = res.files.some(f=>f.profile_intake_started);
+  $('pf_upmsg').textContent = ` uploaded ${res.files.length} file(s)` +
+    (started ? '; profile build started' : '');
+}
+async function rebuildProfile(){
+  const p = currentPerson();
+  if (!p){ $('pf_msg').textContent = 'save the person first'; return; }
+  const btn = $('pf_rebuild');
+  if (btn) btn.disabled = true;
+  const res = await post('/api/profile/intake', {person:p.person});
+  $('pf_msg').textContent = res.error ? res.error :
+    (res.profile_intake_started ? ' profile rebuild started' : ' profile rebuild already running');
+  await refreshProfileRunState();
 }
 
 /* ---------------- workspace ---------------- */
@@ -643,6 +726,7 @@ async function openProject(code){
   if (P.active_run) attach(P.active_run, false);
 }
 function renderWorkspace(){
+  stopProfilePolling();
   $('view').className = 'workspace-view';
   const t = (n,l) => `<button class="${tab===n?'on':''}" data-tab="${n}" onclick="tab='${n}';renderTab()">${l}</button>`;
   $('view').innerHTML = `
@@ -677,7 +761,10 @@ function renderWorkspace(){
   const WF_ORDER = ['search','score','prep','prep-strategy','prep-resume',
                     'prep-linkedin','prep-interview','apply','followup'];
   const wfRank = w => { const i = WF_ORDER.indexOf(w); return i < 0 ? WF_ORDER.length : i; };
-  const orderedWf = [...(S.workflows||[])].sort((a,b)=> wfRank(a)-wfRank(b) || a.localeCompare(b));
+  if (PROJECT_WORKFLOW_HIDDEN.has(wfSel)) wfSel = 'search';
+  const orderedWf = [...(S.workflows||[])]
+    .filter(w=>!PROJECT_WORKFLOW_HIDDEN.has(w))
+    .sort((a,b)=> wfRank(a)-wfRank(b) || a.localeCompare(b));
   for (const w of orderedWf){
     const b=document.createElement('button');
     b.textContent=w; b.className = w===wfSel?'sel':'';
@@ -725,8 +812,13 @@ async function stopRun(rid){
   if (res && res.ok === false) setRunButton();   // nothing to cancel — restore
 }
 async function toggleFocus(jobId, focused){
-  await post(`/api/project/${P.code}/job-focus`, {job_id: jobId, focused});
-  await refresh();
+  const scroll = captureTableScroll('list');
+  const res = await post(`/api/project/${P.code}/job-focus`, {job_id: jobId, focused});
+  if (res.error){ addMsg('error', deviceTs(), res.error); return; }
+  const row = P.jobs.find(r=>String(r.job_id)===String(jobId));
+  if (row) row.focused = !!res.focused;
+  renderTab();
+  restoreTableScroll('list', scroll);
 }
 async function updateTrackerStatus(sel){
   const prev = sel.dataset.prev || '';
@@ -851,9 +943,24 @@ function th(type, key, label){
   return `<th class="sortable" onclick="sortTable('${type}','${key}')">${esc(label)}${sortIcon(type,key)}</th>`;
 }
 function tableWrap(type, cols, rowsHtml){
-  return `<div class="table-wrap"><table><thead><tr>${
+  return `<div class="table-wrap" data-table="${esc(type)}"><table><thead><tr>${
     cols.map(c=>th(type,c.key,c.label)).join('')
   }</tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
+}
+function tableScroller(type){
+  return document.querySelector(`.table-wrap[data-table="${type}"]`);
+}
+function captureTableScroll(type){
+  const el = tableScroller(type);
+  return el ? {top:el.scrollTop, left:el.scrollLeft} : {top:0, left:0};
+}
+function restoreTableScroll(type, pos){
+  requestAnimationFrame(()=>{
+    const el = tableScroller(type);
+    if (!el) return;
+    el.scrollTop = pos.top || 0;
+    el.scrollLeft = pos.left || 0;
+  });
 }
 function filterSelect(type, key, label, rows){
   const active = tableState[type].filters[key] || '';
@@ -872,6 +979,21 @@ function tableTools(type, rows, filters, shown){
     filters.map(([key,label])=>filterSelect(type,key,label,rows)).join('')
   }<span class="muted table-count">${shown} / ${rows.length}</span></div>`;
 }
+function profileIssueLine(text){
+  const needsFix = /candidate-profile|evidence-map|profile-intake|profile\/evidence|newer than candidate-profile/i.test(text);
+  return esc(text) + (needsFix && P
+    ? ` <button class="inline-fix" onclick="fixProjectProfile()">Fix profile</button>` : '');
+}
+async function fixProjectProfile(){
+  if (!P) return;
+  const res = await post('/api/profile/intake', {person:P.person});
+  if (res.error) addMsg('error', deviceTs(), res.error);
+  else addMsg('info', deviceTs(), res.profile_intake_started
+    ? 'profile-intake started' : 'profile-intake already running');
+  S = await api('/api/state');
+  updateBackendBadge();
+  renderTab();
+}
 function renderTab(){
   if (tab==='strategy'){ tab='prep'; prepState.kind='strategy'; }   // legacy top-tab id
   document.querySelectorAll('.tabs button').forEach(b=>b.className = b.dataset.tab===tab?'on':'');
@@ -879,8 +1001,8 @@ function renderTab(){
   if (tab==='inbox'){
     const pf = P.preflight;
     el.innerHTML =
-      (pf.blocking.length? `<div class="inbox-item overdue"><span class="k">setup needed</span><br>${pf.blocking.map(esc).join('<br>')}</div>`:'')
-      + (pf.warnings.length? pf.warnings.map(w=>`<div class="inbox-item gap"><span class="k">heads-up</span><br>${esc(w)}</div>`).join(''):'')
+      (pf.blocking.length? `<div class="inbox-item overdue"><span class="k">setup needed</span><br>${pf.blocking.map(profileIssueLine).join('<br>')}</div>`:'')
+      + (pf.warnings.length? pf.warnings.map(w=>`<div class="inbox-item gap"><span class="k">heads-up</span><br>${profileIssueLine(w)}</div>`).join(''):'')
       + (P.inbox.length ? P.inbox.map(i=>
         `<div class="inbox-item ${i.kind}"><span class="k">${esc(i.kind)}</span><br><strong>${esc(i.title)}</strong> — ${esc(i.text)}</div>`).join('')
         : '<p class="muted">all quiet — nothing needs your attention</p>');
@@ -1714,17 +1836,39 @@ async function loadChatHistory(){
 }
 function addMsg(kind, ts, text){
   const log=$('log'); if(!log) return;
+  const activity = $('runActivity');
+  if (activity) activity.remove();
   const d=document.createElement('div'); d.className = kind === 'user' ? 'msg user' : 'msg '+kind;
   const chip = {stream:'agent', info:'sys', artifact:'file', store:'db', validator:'check',
     approval:'gate', approval_wait:'gate', result:'done', done:'done',
     user:'you', error:'err'}[kind]||kind;
   const stamp = ts || deviceTs();
   d.innerHTML=`<span class="ts">${esc(stamp)}</span>`+`<span class="chip">${chip}</span>`+esc(text);
-  log.appendChild(d); log.scrollTop=log.scrollHeight;
+  log.appendChild(d);
+  if (activity) log.appendChild(activity);
+  log.scrollTop=log.scrollHeight;
+}
+function showRunActivity(text='running'){
+  const log=$('log'); if(!log) return;
+  let d=$('runActivity');
+  if (!d){
+    d=document.createElement('div');
+    d.id='runActivity';
+    d.className='msg info activity-indicator';
+  }
+  d.innerHTML=`<span class="ts">${esc(deviceTs())}</span><span class="chip">run</span>`+
+    esc(text)+`<span class="typing-dots"><span></span><span></span><span></span></span>`;
+  if (d.parentNode !== log) log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+}
+function clearRunActivity(){
+  const d=$('runActivity');
+  if (d) d.remove();
 }
 async function attach(rid, replay=true){ currentRid=rid; seen=0;
   if($('adot'))$('adot').className='dot live';
   if (poller) clearInterval(poller);
+  showRunActivity('starting');
   setRunButton();
   if (!replay){
     const v = await api(`/api/runs/${rid}?since=0`);
@@ -1732,16 +1876,18 @@ async function attach(rid, replay=true){ currentRid=rid; seen=0;
       seen = v.n_events;
       renderApproval(v);
       if (v.status !== 'running'){ if($('adot'))$('adot').className='dot'; currentRid=null;
-        setRunButton(); return; }
+        clearRunActivity(); setRunButton(); return; }
     }
   }
   poller=setInterval(poll,1000); poll(); }
 function stopPolling(){ if (poller){ clearInterval(poller); poller=null; } currentRid=null;
+  clearRunActivity();
   setRunButton(); }
 async function poll(){
   if (!currentRid || !$('log')) return;
   const v = await api(`/api/runs/${currentRid}?since=${seen}`);
   if (v.error) return;
+  clearRunActivity();
   for (const e of v.events) addMsg(e.kind, e.ts, e.text);
   seen = v.n_events;
   renderApproval(v);
@@ -1749,6 +1895,8 @@ async function poll(){
     if($('adot'))$('adot').className='dot';
     stopPolling();
     await refreshProjectData();
+  } else {
+    showRunActivity(v.pending ? 'waiting for approval' : 'running');
   }
 }
 function renderApproval(v){
@@ -1764,7 +1912,7 @@ function renderApproval(v){
 }
 async function refreshProjectData(){
   S = await api('/api/state');
-  const b=$('backend'); if (b){ b.textContent=S.backend; b.className='badge'+(S.backend==='mock'?' mock':''); }
+  updateBackendBadge();
   if (!P) return;
   const code = P.code;
   const next = await api('/api/project/'+code);
