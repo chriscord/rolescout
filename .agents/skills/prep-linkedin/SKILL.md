@@ -31,6 +31,8 @@ If the fresh handoff file is missing, empty, or clearly not LinkedIn profile tex
 
 For focused prep, do not use a bare LinkedIn URL as a substitute for current content. If current content is missing, ask the user to complete the supported LinkedIn import/capture path first.
 
+A name mismatch between the resume/profile materials and the captured LinkedIn page is a warning and open question, not a hard gate. It must not hard fail the run by itself. Continue analysis from the captured current source when the LinkedIn source URL and visible profile text are valid, and record the mismatch in `## Discrepancies` / Open Questions so the user can confirm identity or update materials. Hard fail only when the handoff is missing, empty, not a LinkedIn profile surface, or clearly the wrong URL class.
+
 Never type credentials, never change LinkedIn fields, never save edits, never message, and never continue with a "local evidence proxy" review.
 
 ## Output — `linkedin/<group>/linkedin-review.md` per group
@@ -47,6 +49,14 @@ End with an overall score computed as a **weighted average: Experience counts ×
 - **Change**: current → proposed, side by side, with why (tied to group must-haves).
 
 Consistency check before finishing: proposals must not contradict the group's tailored resume (`resumes/<group>/`) — recruiters cross-read; dates/titles/claims identical everywhere; flag any tension found.
+
+Before reporting completion, run:
+
+```bash
+python scripts/validate_linkedin_review.py <project>
+```
+
+Fix every FAIL. Do not replace this with one-off PowerShell or Python structural checks; the validator is the UI/parser contract.
 
 **Cross-source recency & discrepancy check (mandatory).** Compare the captured LinkedIn against the latest baseline resume in `profiles/<person>/` (and the group's tailored resume when it exists). Decide which source is more current by the most recent experience entry (role + dates); the newer source is the reference for current-state facts. Then:
 

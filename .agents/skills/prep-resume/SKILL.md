@@ -136,6 +136,14 @@ File: `resumes/<group>/resume_{UserName}_{groupSlug}.docx` (UserName = person's 
 
 DOCX content must come from the validated `resume-draft.md`. Do not create or edit bullets only inside DOCX; that bypasses content validation.
 
+Before any visual render check, run:
+
+```bash
+python scripts/render_docx_gate.py resumes/<group>/resume_{UserName}_{groupSlug}.docx
+```
+
+If it prints `PASS`, use the bundled document renderer or installed LibreOffice/Poppler path to verify page count and layout. If it prints `BLOCKED`, do not call ad-hoc renderer commands that will crash on missing `pdf2image`, `soffice`, or `pdftoppm`; record render QA as blocked/partial in `resume-validation.md` and run deterministic structural DOCX checks instead (package opens, document XML exists, Times New Roman styles, margins, section dividers, and real Word numbering). Missing render dependencies are a QA limitation, not permission to skip content validation.
+
 ## Step 6 - Write validation report
 
 Write `resumes/<group>/resume-validation.md` with:

@@ -39,6 +39,12 @@ per-position check before instructions:
 3. Identify the application route: ATS/vendor, direct careers form, email route,
    account requirement, referral path, and whether referral must happen before
    submission.
+   Do not invent an `/apply` URL from a careers posting prefix. Some official
+   careers sites expose application routes only inside the posting page, behind
+   sign-in, or through embedded vendor metadata. Parse the visible posting for
+   the actual apply/sign-in/application link; if it is not visible without
+   login, record "account/sign-in required; route not public" instead of probing
+   guessed URLs.
 4. Capture required materials and visible screening questions before login.
 5. Flag sensitive fields that require the user to answer manually: compensation,
    visa/work authorization, demographics, address, phone, references, or legal
@@ -98,4 +104,5 @@ python3 scripts/upsert_rows.py tracker rows.json
 
 Every selected position has a current instruction file, tracker rows are
 validated and upserted, uncertainty is labeled, and the user knows the manual
-next step. No external action is performed.
+next step. Run `python scripts/validate_application_packets.py <project>` and fix
+every FAIL before reporting. No external action is performed.
