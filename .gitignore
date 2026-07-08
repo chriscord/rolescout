@@ -1,0 +1,120 @@
+# ============================================================
+# RoleScout .gitignore — public GitHub distribution
+# Rule of thumb: ship the product (code, skills, scripts,
+# references, tests, benchmarks); never ship a person's career
+# data or anything a run/build regenerates.
+# ============================================================
+
+# ---- personal / career data (NEVER publish) ----
+/profiles/
+/projects/
+/active-project.json
+/uploads/
+
+# ---- superseded prototypes (kept on disk, out of version control) ----
+archive/
+app/
+
+# ---- runtime inputs (regenerated per user; not part of the shipped product) ----
+/human-inputs/
+
+# ---- AI build-process traces (internal; not product features) ----
+/BUILDLOG.md
+/STATUS.md
+/docs/plan/
+/docs/spec/dev-plan.md
+
+# ---- local reference material (not part of the product) ----
+docs/reference/
+
+# ---- generated / regenerable ----
+/dashboard/
+/releases/
+*/output/
+*/outputs/
+*/tmp/
+*/temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.log
+.doctor-probe-*.db
+qa-reports/
+
+# ---- local databases and mirrors ----
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.csv.tmp
+*.xlsx.tmp
+
+# ---- python packaging / caches ----
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+pip-wheel-metadata/
+build/
+*.egg-info/
+
+# Keep root dist/: it contains shipped Claude/Codex skill packages.
+# Do not add /dist/ here.
+
+# ---- test / browser automation artifacts ----
+.playwright/
+playwright-report/
+test-results/
+coverage/
+screenshots/
+videos/
+traces/
+junit*.xml
+
+# ---- node / frontend tooling if locally installed ----
+node_modules/
+.next/
+.turbo/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Codex / Claude / local agent state ----
+.codex/
+.claude/
+.mcp.json
+.aider*
+.continue/
+.cursor/
+
+# ---- env & OS noise ----
+.env
+.env.*
+!.env.example
+.secrets
+.secrets.*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

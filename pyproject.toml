@@ -1,0 +1,52 @@
+# RoleScout — local-first AI recruiting workflow + EvalOps toolkit.
+# PyPI name is a human input: <<HUMAN_INPUT:distribution.pypi_name>> (default "rolescout",
+# see human-inputs/manifest.json). Local pipx/uv install from the repo works regardless.
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rolescout"
+dynamic = ["version"]
+readme = "README.md"
+description = "Local-first AI recruiting workflow product with a first-class eval/bench quality system"
+requires-python = ">=3.10"
+license = { text = "All rights reserved (placeholder — <<HUMAN_INPUT:license.choice>>)" }
+authors = [{ name = "RoleScout maintainer" }]
+keywords = ["recruiting", "job-search", "agent", "evals", "local-first"]
+
+# Core is stdlib-only by design (environment-variance mitigation, product-spec §4).
+dependencies = []
+
+[project.optional-dependencies]
+xlsx = ["openpyxl"]          # xlsx pipeline view; store works without it
+# Rendered-browser capture for JS-heavy careers sites (Meta, TikTok, Workday, …).
+# Not bundled by default (browser binaries are large); after install run
+# `python -m playwright install chromium`. The agent installs this on demand when
+# a render:js site has no browser runtime available (see self_hosted_careers).
+browser = ["playwright"]
+dev = ["ruff"]
+
+[project.scripts]
+rolescout = "rolescout.cli:main"
+
+[tool.setuptools]
+packages = { find = { include = ["rolescout*"] } }
+
+[tool.setuptools.package-data]
+rolescout = ["llm/envelopes/*.json", "qa/judge_prompts/*.md",
+             "bench/mock_outputs/*.json", "telemetry/*.md", "web/*.html",
+             "llm/model-profiles.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rolescout.__version__" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["archive", "scripts", "app", "docs", "benchmarks", "projects", "profiles"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

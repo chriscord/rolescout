@@ -1,0 +1,552 @@
+# RoleScout search source registry.
+#
+# Purpose:
+#   Seed company-universe and source-plan creation with maintained, auditable
+#   starting points. The agent must still verify every URL at runtime before
+#   relying on it; a stale URL is a discovery seed, not evidence of absence.
+#
+# Format note:
+#   This file is intentionally plain YAML for human editing. The current runtime
+#   does not parse it deterministically; job-opening-research agents read it as a
+#   reference document while building targets/company-universe.json and
+#   targets/source-plan.json.
+
+version: 2
+url_policy: verify_at_runtime_before_relying
+# Coverage note (v2): ATS families and board feeds below match the breadth of
+# widely used open recruiting stacks (career-ops-class coverage). Patterns are
+# discovery seeds; always verify per tenant at runtime.
+branded_url_rule: >
+  When a company has both a branded careers page and a raw ATS board, prefer the
+  branded page as source_url and for liveness checks; raw ATS URLs can return
+  false 410/closed states (job-ID mismatch) when a branded page exists.
+
+ats_platforms:
+  - name: Greenhouse
+    board_patterns:
+      - https://boards.greenhouse.io/<token>
+      - https://job-boards.greenhouse.io/<token>
+      - https://job-boards.eu.greenhouse.io/<token>
+    public_data_patterns:
+      - https://boards-api.greenhouse.io/v1/boards/<token>/jobs
+    liveness_notes:
+      - redirect to a URL containing "?error=true" means the posting is closed
+    discovery_queries:
+      - site:boards.greenhouse.io "<company>"
+      - site:job-boards.greenhouse.io "<company>"
+      - site:job-boards.eu.greenhouse.io "<company>"
+  - name: Lever
+    board_patterns:
+      - https://jobs.lever.co/<token>
+    public_data_patterns:
+      - https://api.lever.co/v0/postings/<token>?mode=json
+    discovery_queries:
+      - site:jobs.lever.co "<company>"
+  - name: Ashby
+    board_patterns:
+      - https://jobs.ashbyhq.com/<org>
+    public_data_patterns:
+      - https://api.ashbyhq.com/posting-api/job-board/<org>
+      - https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams (POST, organizationHostedJobsPageName=<org>)
+    discovery_queries:
+      - site:jobs.ashbyhq.com "<company>"
+  - name: Workable
+    board_patterns:
+      - https://apply.workable.com/<account>
+    public_data_patterns:
+      - https://apply.workable.com/api/v1/widget/accounts/<account> (verify per account)
+      - public Workable account/job pages when visible; verify per account
+    discovery_queries:
+      - site:apply.workable.com "<company>"
+      - site:jobs.workable.com "<company>"
+  - name: SmartRecruiters
+    board_patterns:
+      - https://careers.smartrecruiters.com/<Company>
+    public_data_patterns:
+      - https://api.smartrecruiters.com/v1/companies/<Company>/postings
+    discovery_queries:
+      - site:careers.smartrecruiters.com "<company>"
+  - name: Workday
+    board_patterns:
+      - https://<company>.wd<N>.myworkdayjobs.com/<site>
+    public_data_patterns:
+      - 'https://<company>.wd<N>.myworkdayjobs.com/wday/cxs/<company>/<site>/jobs (POST {"appliedFacets":{},"limit":20,"offset":0,"searchText":""}; paginate by offset)'
+      - search-indexed posting pages and direct job-ID URLs
+    discovery_queries:
+      - site:myworkdayjobs.com "<company>" "<location>"
+  - name: Recruitee
+    board_patterns:
+      - https://<tenant>.recruitee.com
+    public_data_patterns:
+      - https://<tenant>.recruitee.com/api/offers/
+    discovery_queries:
+      - site:recruitee.com "<company>"
+  - name: Teamtailor
+    board_patterns:
+      - https://<tenant>.teamtailor.com/jobs
+    public_data_patterns:
+      - https://<tenant>.teamtailor.com/jobs.rss (zero-auth per-tenant feed; location in tt: tags, remoteStatus for remote)
+    discovery_queries:
+      - site:teamtailor.com "<company>" jobs
+  - name: Personio
+    board_patterns:
+      - https://<tenant>.jobs.personio.de
+      - https://<tenant>.jobs.personio.com
+    public_data_patterns:
+      - https://<tenant>.jobs.personio.de/xml (public XML jobs feed; verify per tenant)
+    discovery_queries:
+      - site:jobs.personio.de "<company>"
+  - name: BambooHR
+    board_patterns:
+      - https://<tenant>.bamboohr.com/careers
+    public_data_patterns:
+      - https://<tenant>.bamboohr.com/careers/list
+      - https://<tenant>.bamboohr.com/careers/<id>/detail
+    discovery_queries:
+      - site:bamboohr.com "<company>" careers
+  - name: Breezy HR
+    board_patterns:
+      - https://<tenant>.breezy.hr
+    public_data_patterns:
+      - https://<tenant>.breezy.hr/json (public position feed; verify per tenant)
+    discovery_queries:
+      - site:breezy.hr "<company>"
+  - name: Pinpoint
+    board_patterns:
+      - https://<tenant>.pinpointhq.com
+    public_data_patterns:
+      - https://<tenant>.pinpointhq.com/postings.json (zero-auth per-tenant feed)
+    discovery_queries:
+      - site:pinpointhq.com "<company>"
+  - name: Rippling
+    board_patterns:
+      - https://ats.rippling.com/<slug>/jobs
+    public_data_patterns:
+      - https://api.rippling.com/platform/api/ats/v1/board/<slug>/jobs
+    discovery_queries:
+      - site:ats.rippling.com "<company>"
+  - name: iCIMS / JibeApply
+    board_patterns:
+      - https://<slug>.jibeapply.com/jobs
+      - branded iCIMS-hosted careers sites at their own /jobs path
+    public_data_patterns:
+      - https://<slug>.jibeapply.com/api/jobs?page=<N> (rewrite /jobs to /api/jobs; paginate)
+    discovery_queries:
+      - site:jibeapply.com "<company>"
+      - site:icims.com "<company>" jobs
+  - name: Jobvite
+    board_patterns:
+      - https://jobs.jobvite.com/<company>
+    public_data_patterns:
+      - none confirmed; enumerate the hosted board page
+    discovery_queries:
+      - site:jobs.jobvite.com "<company>"
+  - name: SuccessFactors
+    board_patterns:
+      - https://careers.<company-domain> (SuccessFactors-hosted; also career<N>.successfactors.com/portal tenants)
+    public_data_patterns:
+      - none confirmed; JS-heavy — use search-indexed posting pages and direct job-ID URLs
+    discovery_queries:
+      - site:successfactors.com "<company>" career
+  - name: Comeet
+    board_patterns:
+      - https://www.comeet.com/jobs/<company>/<uid>
+    public_data_patterns:
+      - per-tenant API URL cannot be derived from the branded page; capture the full URL when found
+    discovery_queries:
+      - site:comeet.com/jobs "<company>"
+
+# Aggregator boards and public feeds — DISCOVERY signal, not source of record.
+# ============================================================================
+# Large self-hosted / bespoke careers sites (NOT a third-party ATS).
+# These companies do NOT publish a Greenhouse/Lever/Ashby/Workday board, so
+# treating "no structured ATS feed" as a failure silently drops them (the exact
+# self-hosted-careers seed miss). Handle them as a FIRST-CLASS source, co-equal with ATS:
+# hit the careers search endpoint (JSON API when one exists, else the server- or
+# JS-rendered listing), collect each posting's OWN official URL, then fetch that
+# URL and parse the JD there. verify_at_runtime — patterns/API paths drift.
+# ============================================================================
+self_hosted_careers:
+  capture_contract: >
+    For a company here: (1) enumerate/search the careers endpoint for the target
+    location(s); (2) collect each posting's official URL (posting_url pattern);
+    (3) fetch each posting URL and parse title/location/seniority/must-haves/JD,
+    snapshotting to targets/jobs/<job_id>.json. render:json_api and render:server_html
+    need NO browser; render:js means the listing/detail is JS-rendered — use a
+    browser runtime (Chrome DevTools or Playwright; install Playwright if neither is
+    present). A seed here is only loggable as failed/absent after the JSON/API read
+    AND a web-discovery pass for direct posting URLs both come up empty.
+  companies:
+    - name: Google
+      render: server_html            # server-rendered list + detail — NO browser needed (verified)
+      careers_search_url: https://www.google.com/about/careers/applications/jobs/results/
+      search_params: "?q=<keywords>&location=<city>"
+      json_api: https://careers.google.com/api/v3/search/?q=<kw>&location=<city>   # optional; the results pages are authoritative
+      posting_url: https://www.google.com/about/careers/applications/jobs/results/<id>-<slug>
+      notes: "Server-rendered; YouTube / Google Cloud / DeepMind roles live under the same site."
+    - name: Meta
+      render: js                     # SPA — browser render, or mirror
+      careers_search_url: https://www.metacareers.com/jobs/
+      posting_url: https://www.metacareers.com/jobs/<id>       # also /profile/job_details/<id>
+      mirrors: ["https://metacareers.dejobs.org/", "search-engine indexing of metacareers.com/jobs/<id>"]
+      notes: "metacareers is JS-blocked to plain fetch; render with a browser, or capture title/location/family from the dejobs mirror + search excerpts and set posting_status per the live listing."
+    - name: Amazon
+      render: json_api
+      careers_search_url: https://www.amazon.jobs/en/search
+      json_api: https://www.amazon.jobs/en/search.json?base_query=<kw>&loc_query=<city>&result_limit=100
+      posting_url: https://www.amazon.jobs/en/jobs/<id>
+    - name: Apple
+      render: json_api
+      careers_search_url: https://jobs.apple.com/en-us/search
+      json_api: https://jobs.apple.com/api/role/search   # POST: {query, filters:{locations}}
+      posting_url: https://jobs.apple.com/en-us/details/<id>
+    - name: Microsoft
+      render: json_api
+      careers_search_url: https://jobs.careers.microsoft.com/global/en/search
+      json_api: https://gcsservices.careers.microsoft.com/search/api/v1/search?q=<kw>&lc=<city>&pg=1&pgSz=100
+      posting_url: https://jobs.careers.microsoft.com/global/en/job/<id>
+    - name: Netflix
+      render: json_api               # Eightfold (verified)
+      careers_search_url: https://explore.jobs.netflix.net/careers
+      json_api: https://explore.jobs.netflix.net/api/apply/v2/jobs?domain=netflix.com&query=<kw>&location=<city>
+      posting_url: https://explore.jobs.netflix.net/careers/job/<id>   # JD via /api/apply/v2/jobs/<id>?domain=netflix.com
+    - name: Uber
+      render: json_api
+      careers_search_url: https://www.uber.com/us/en/careers/list/
+      json_api: https://www.uber.com/api/loadSearchJobsResults   # POST: {params:{location, query}}
+      posting_url: https://www.uber.com/careers/list/<id>
+    - name: Airbnb
+      render: json_api               # branded site is Greenhouse-backed
+      careers_search_url: https://careers.airbnb.com/positions/
+      json_api: https://boards-api.greenhouse.io/v1/boards/airbnb/jobs   # standard Greenhouse feed (token 'airbnb')
+      posting_url: https://careers.airbnb.com/positions/<id>
+      notes: "The Greenhouse ATS feed works; capture the branded careers.airbnb.com URL as source_url."
+    - name: LinkedIn
+      render: js                     # login-gated for full JD
+      careers_search_url: https://www.linkedin.com/company/linkedin/jobs/
+      posting_url: https://www.linkedin.com/jobs/view/<jobId>
+      notes: "LinkedIn (Microsoft) posts on LinkedIn itself — covered by the mandatory LinkedIn Jobs pass under the login-handoff contract; never log in from the agent."
+    - name: TikTok / ByteDance
+      render: js
+      careers_search_url: https://lifeattiktok.com/search
+      json_api: https://lifeattiktok.com/api/v1/search/job/posts   # POST: {keyword, location_code_list}
+      posting_url: https://lifeattiktok.com/search/<id>
+      notes: "JS-heavy; use the JSON API when reachable, else render with a browser."
+    - name: Electronic Arts
+      render: server_html            # Avature (verified)
+      careers_search_url: https://jobs.ea.com/en_US/careers/SearchJobs/<keyword>   # keyword in the PATH; ?keywords= is ignored
+      posting_url: https://jobs.ea.com/en_US/careers/JobDetail/<slug>/<id>
+  also_standard_ats: >
+    Many large employers DO use a standard ATS already covered by ats_platforms —
+    handle them there, not here (try the ATS token first): Workday (NVIDIA,
+    Salesforce, Adobe, and any *.myworkdayjobs.com host), Greenhouse (Stripe,
+    Airbnb, Databricks, Coinbase, Figma), Ashby (OpenAI, Ramp, Notion, Linear),
+    Lever, SmartRecruiters (Grab, Visa), iCIMS / Taleo / SuccessFactors (older
+    enterprises). Only fall to this bespoke-careers path when no ATS token resolves.
+
+# Rule: discover here, then verify and capture the JD at the company/ATS source
+# whenever one exists. Empty/stale feed results are coverage signals, never
+# evidence of absence.
+job_boards_and_aggregators:
+  - name: RemoteOK
+    public_data_patterns: [https://remoteok.com/api]
+    focus: remote, tech-heavy
+  - name: Remotive
+    public_data_patterns: [https://remotive.com/api/remote-jobs]
+    focus: remote
+  - name: We Work Remotely
+    public_data_patterns: [https://weworkremotely.com/remote-jobs.rss]
+    focus: remote
+  - name: Working Nomads
+    public_data_patterns: [https://www.workingnomads.com/api/exposed_jobs/]
+    focus: remote
+  - name: NoDesk
+    public_data_patterns: [https://nodesk.co/remote-jobs/index.xml]
+    focus: remote
+  - name: Arbeitnow
+    public_data_patterns: [https://www.arbeitnow.com/api/job-board-api]
+    focus: EU/DACH
+  - name: Glints
+    board_patterns: [https://glints.com/opportunities/jobs]
+    public_data_patterns: [public GraphQL job-search endpoint; verify at runtime]
+    focus: Southeast Asia
+  - name: JobStreet / SEEK
+    board_patterns: [https://www.jobstreet.com.sg, https://www.seek.com.au]
+    public_data_patterns: [public SEEK chalice-search JSON API; verify at runtime]
+    focus: SEA/ANZ
+  - name: The Hub
+    public_data_patterns: [https://thehub.io/api/jobs]
+    focus: Nordic/EU startups
+  - name: Landing.jobs
+    public_data_patterns: [https://landing.jobs/api/v1/jobs]
+    focus: tech, Europe
+  - name: 4 Day Week
+    public_data_patterns: ["https://4dayweek.io/api/jobs (paginate ?page=N)"]
+    focus: 4-day-week employers
+  - name: HN Who's Hiring
+    public_data_patterns: ["https://hnrss.org/whoishiring/jobs (monthly Ask HN: Who is hiring? thread)"]
+    focus: startups, global
+  - name: Y Combinator / Work at a Startup
+    board_patterns: [https://www.ycombinator.com/jobs, https://www.workatastartup.com]
+    focus: YC portfolio
+  - name: Wellfound (AngelList Talent)
+    board_patterns: [https://wellfound.com]
+    focus: startups; largely login-gated — treat strictly as existence signal
+  - name: VC portfolio job boards
+    board_patterns: ["https://jobs.<vc-domain> (Getro/Consider-powered; e.g. a16z, Sequoia, Lightspeed portfolio boards)"]
+    focus: funded startups by investor
+
+# Reusable web-discovery query shapes (Source matrix level 3). Instantiate with
+# the thesis's role families, locations, and title synonyms; log results_seen
+# per query.
+discovery_query_catalog:
+  - 'site:<ats-domain> "<role family>" "<location or remote>"'
+  - 'site:boards.greenhouse.io OR site:job-boards.greenhouse.io "<title A>" OR "<title B>" <location>'
+  - 'site:jobs.ashbyhq.com OR site:jobs.lever.co "<title A>" OR "<title B>" <location>'
+  - '"<title A>" OR "<title B>" OR "<title C>" site:job-boards.greenhouse.io OR site:jobs.ashbyhq.com OR site:jobs.lever.co'
+  - '"<company>" careers "<role family>" <location>'
+  - '"<role family>" jobs <location> site:<regional or niche board>'
+
+# Signals that a captured posting is closed/stale — check before persisting and
+# during refresh; set posting_status accordingly and log the signal.
+posting_expiry_signals:
+  - 'final URL contains "?error=true" (Greenhouse closed-posting redirect)'
+  - 'page text: "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found"'
+  - JD body under ~300 characters after render (shell page)
+  - apply button absent or disabled on an otherwise live board
+  - 'reposting: same company+title reappearing after a logged expiry — note it in research-log (evergreen-posting signal, affects priority not legitimacy by itself)'
+
+target_company_sets:
+  - id: ex_mbb_tech_strategy_investment
+    description: Seed list for ex-consultants targeting strategy, operations, investing, fintech, AI/data, marketplaces, and platform companies.
+    use_when:
+      - project targets mention consulting, MBB, strategy, operations, investing, private equity, venture capital, fintech, AI, data, cloud, marketplaces, partnerships, BD, product strategy, chief of staff, or APAC expansion.
+    instructions:
+      - Use matching entries as seeds and adjacent-company hints, not as a universal mandatory list.
+      - Include only companies that match the user's location, seniority, industry, and exclusion constraints.
+      - Verify careers_url or discover the current official careers/ATS URL before logging absence.
+    companies:
+      - name: OpenAI
+        bucket: ai_labs_and_platforms
+        careers_url: https://openai.com/careers/
+        tags: [ai, platform, strategy, partnerships]
+      - name: Anthropic
+        bucket: ai_labs_and_platforms
+        careers_url: https://www.anthropic.com/careers
+        tags: [ai, policy, strategy, partnerships]
+      - name: Google DeepMind
+        bucket: ai_labs_and_platforms
+        careers_url: https://deepmind.google/careers/
+        tags: [ai, research, product_strategy]
+      - name: Microsoft
+        bucket: ai_cloud_platforms
+        careers_url: https://careers.microsoft.com/
+        tags: [ai, cloud, enterprise, strategy]
+      - name: Meta
+        bucket: ai_consumer_platforms
+        careers_url: https://www.metacareers.com/
+        tags: [ai, consumer, marketplace, strategy]
+      - name: NVIDIA
+        bucket: ai_infrastructure
+        careers_url: https://www.nvidia.com/en-us/about-nvidia/careers/
+        tags: [ai, infrastructure, ecosystem]
+      - name: Databricks
+        bucket: data_cloud
+        careers_url: https://www.databricks.com/company/careers
+        tags: [data, cloud, enterprise, strategy]
+      - name: Snowflake
+        bucket: data_cloud
+        careers_url: https://careers.snowflake.com/us/en
+        tags: [data, cloud, enterprise]
+      - name: Palantir
+        bucket: data_ai_deployment
+        careers_url: https://www.palantir.com/careers/
+        tags: [data, ai_deployment, operations]
+      - name: Scale AI
+        bucket: ai_data_infrastructure
+        careers_url: https://scale.com/careers
+        tags: [ai, data, operations]
+      - name: Cohere
+        bucket: ai_labs_and_platforms
+        careers_url: https://cohere.com/careers
+        tags: [ai, enterprise, partnerships]
+      - name: Mistral AI
+        bucket: ai_labs_and_platforms
+        careers_url: https://mistral.ai/careers
+        tags: [ai, enterprise, partnerships]
+      - name: Perplexity
+        bucket: ai_consumer_platforms
+        careers_url: https://www.perplexity.ai/careers
+        tags: [ai, consumer, growth]
+      - name: Hugging Face
+        bucket: ai_developer_platforms
+        careers_url: https://huggingface.co/jobs
+        tags: [ai, developer_platform, community]
+      - name: Cloudflare
+        bucket: cloud_infrastructure
+        careers_url: https://www.cloudflare.com/careers/
+        tags: [cloud, security, platform]
+      - name: MongoDB
+        bucket: data_cloud
+        careers_url: https://www.mongodb.com/careers
+        tags: [data, cloud, enterprise]
+      - name: Atlassian
+        bucket: enterprise_software
+        careers_url: https://www.atlassian.com/company/careers
+        tags: [enterprise, collaboration, product_strategy]
+      - name: GitLab
+        bucket: developer_platforms
+        careers_url: https://about.gitlab.com/jobs/
+        tags: [developer_platform, remote, operations]
+      - name: Notion
+        bucket: productivity_platforms
+        careers_url: https://www.notion.com/careers
+        tags: [productivity, consumer_enterprise, strategy]
+      - name: Stripe
+        bucket: fintech_payments
+        careers_url: https://stripe.com/jobs
+        tags: [payments, fintech, platform, strategy]
+      - name: Block
+        bucket: fintech_payments
+        careers_url: https://block.xyz/careers
+        tags: [payments, fintech, consumer]
+      - name: PayPal
+        bucket: fintech_payments
+        careers_url: https://careers.pypl.com/
+        tags: [payments, fintech, marketplace]
+      - name: Adyen
+        bucket: fintech_payments
+        careers_url: https://www.adyen.com/careers
+        tags: [payments, enterprise, global]
+      - name: Wise
+        bucket: fintech_payments
+        careers_url: https://wise.jobs/
+        tags: [payments, fintech, international]
+      - name: Revolut
+        bucket: fintech_banking
+        careers_url: https://www.revolut.com/careers/
+        tags: [fintech, banking, growth]
+      - name: Nubank
+        bucket: fintech_banking
+        careers_url: https://international.nubank.com.br/careers/
+        tags: [fintech, banking, emerging_markets]
+      - name: Robinhood
+        bucket: fintech_investing
+        careers_url: https://careers.robinhood.com/
+        tags: [fintech, investing, consumer]
+      - name: Coinbase
+        bucket: fintech_crypto
+        careers_url: https://www.coinbase.com/careers
+        tags: [crypto, fintech, platform]
+      - name: Ramp
+        bucket: fintech_b2b
+        careers_url: https://ramp.com/careers
+        tags: [fintech, b2b, operations]
+      - name: Brex
+        bucket: fintech_b2b
+        careers_url: https://www.brex.com/careers
+        tags: [fintech, b2b, payments]
+      - name: Airwallex
+        bucket: fintech_payments
+        careers_url: https://www.airwallex.com/careers
+        tags: [payments, apac, fintech]
+      - name: Razorpay
+        bucket: fintech_payments
+        careers_url: https://razorpay.com/jobs/
+        tags: [payments, fintech, india]
+      - name: Grab
+        bucket: apac_superapps
+        careers_url: https://www.grab.careers/
+        tags: [marketplace, fintech, apac]
+      - name: Uber
+        bucket: marketplaces_mobility
+        careers_url: https://www.uber.com/us/en/careers/
+        tags: [marketplace, mobility, operations]
+      - name: Airbnb
+        bucket: marketplaces_travel
+        careers_url: https://careers.airbnb.com/
+        tags: [marketplace, travel, community]
+      - name: DoorDash
+        bucket: marketplaces_local_commerce
+        careers_url: https://careers.doordash.com/
+        tags: [marketplace, logistics, operations]
+      - name: Instacart
+        bucket: marketplaces_local_commerce
+        careers_url: https://www.instacart.com/company/careers
+        tags: [marketplace, grocery, operations]
+      - name: Coupang
+        bucket: ecommerce_marketplaces
+        careers_url: https://www.coupang.jobs/
+        tags: [ecommerce, marketplace, logistics]
+      - name: Sea
+        bucket: apac_consumer_platforms
+        careers_url: https://www.sea.com/careers
+        tags: [apac, ecommerce, gaming, fintech]
+      - name: Blackstone
+        bucket: private_equity
+        careers_url: https://www.blackstone.com/careers/
+        tags: [private_equity, investing, operations]
+      - name: KKR
+        bucket: private_equity
+        careers_url: https://www.kkr.com/careers
+        tags: [private_equity, investing, operations]
+      - name: Carlyle
+        bucket: private_equity
+        careers_url: https://www.carlyle.com/careers
+        tags: [private_equity, investing]
+      - name: TPG
+        bucket: private_equity
+        careers_url: https://www.tpg.com/careers
+        tags: [private_equity, investing]
+      - name: General Atlantic
+        bucket: growth_equity
+        careers_url: https://www.generalatlantic.com/careers/
+        tags: [growth_equity, investing, technology]
+      - name: Vista Equity Partners
+        bucket: software_private_equity
+        careers_url: https://www.vistaequitypartners.com/careers/
+        tags: [private_equity, software, operations]
+      - name: Thoma Bravo
+        bucket: software_private_equity
+        careers_url: https://www.thomabravo.com/careers
+        tags: [private_equity, software]
+      - name: Silver Lake
+        bucket: technology_private_equity
+        careers_url: https://www.silverlake.com/careers/
+        tags: [private_equity, technology]
+      - name: Insight Partners
+        bucket: venture_growth
+        careers_url: https://www.insightpartners.com/careers/
+        tags: [venture, growth_equity, software]
+      - name: Andreessen Horowitz
+        bucket: venture_capital
+        careers_url: https://a16z.com/careers/
+        tags: [venture, crypto, ai, platform]
+      - name: Sequoia Capital
+        bucket: venture_capital
+        careers_url: https://www.sequoiacap.com/careers/
+        tags: [venture, startups, technology]
+      - name: Lightspeed Venture Partners
+        bucket: venture_capital
+        careers_url: https://lsvp.com/careers/
+        tags: [venture, startups, technology]
+      - name: Bessemer Venture Partners
+        bucket: venture_capital
+        careers_url: https://www.bvp.com/careers
+        tags: [venture, startups, technology]
+      - name: Temasek
+        bucket: sovereign_investment
+        careers_url: https://www.temasek.com.sg/en/careers
+        tags: [investment, singapore, portfolio]
+      - name: GIC
+        bucket: sovereign_investment
+        careers_url: https://www.gic.com.sg/careers/
+        tags: [investment, singapore, portfolio]
+      - name: SoftBank Group
+        bucket: technology_investment
+        careers_url: https://group.softbank/en/careers
+        tags: [investment, technology, portfolio]
+      - name: Prosus
+        bucket: technology_investment
+        careers_url: https://www.prosus.com/careers
+        tags: [investment, marketplaces, global]

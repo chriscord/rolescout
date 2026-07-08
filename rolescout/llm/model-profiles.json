@@ -1,0 +1,97 @@
+{
+  "version": 2,
+  "_notes": {
+    "purpose": "RoleScout pins Codex model and reasoning effort per workflow instead of inheriting the user's Codex CLI defaults.",
+    "edit": "Change this file after it is copied to ~/.rolescout/model-profiles.json, or set ROLESCOUT_MODEL_PROFILES to another JSON file.",
+    "effort_values": "minimal, low, medium, high, xhigh",
+    "override_env": "For one run, set ROLESCOUT_CODEX_MODEL and/or ROLESCOUT_CODEX_EFFORT."
+  },
+  "codex": {
+    "default": {
+      "model": "gpt-5.5",
+      "effort": "medium"
+    },
+    "workflows": {
+      "search": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "score": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "prep": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-strategy": {
+        "model": "gpt-5.5",
+        "effort": "xhigh"
+      },
+      "prep-resume": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-linkedin": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-interview": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "apply": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "complete": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      }
+    }
+  },
+  "external_cli": {
+    "default": {
+      "model": "gpt-5.5",
+      "effort": "medium"
+    },
+    "workflows": {
+      "search": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "score": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "prep": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-strategy": {
+        "model": "gpt-5.5",
+        "effort": "xhigh"
+      },
+      "prep-resume": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-linkedin": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-interview": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "apply": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "complete": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      }
+    }
+  }
+}

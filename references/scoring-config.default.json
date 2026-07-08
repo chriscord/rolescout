@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "changelog": ["2026-07-02: initial defaults proposed by agent (see references/prioritization-model.md)"],
+  "priority_thresholds": {"high": 70, "medium": 50},
+  "dealbreaker_criteria": ["location_remote"],
+  "criteria": [
+    {"name": "role_fit", "weight": 25, "description": "Must-have coverage from evidence map (mirror fit_score)"},
+    {"name": "comp_potential", "weight": 15, "description": "Expected comp vs user's target range; estimates labeled"},
+    {"name": "company_quality", "weight": 15, "description": "Stability, trajectory, engineering reputation, user interest"},
+    {"name": "location_remote", "weight": 10, "description": "Compatibility with location/remote constraints; 1 = violates (forces low)"},
+    {"name": "growth_path", "weight": 10, "description": "Career trajectory value: scope growth, learning, brand"},
+    {"name": "likelihood", "weight": 10, "description": "Realistic odds: seniority match, posting age, competition"},
+    {"name": "network_access", "weight": 5, "description": "Referral or warm contact available"},
+    {"name": "interview_cost", "weight": 5, "description": "Inverted effort: 5 = light process, 1 = long gauntlet"},
+    {"name": "timing", "weight": 5, "description": "Posting freshness vs user's timeline"}
+  ]
+}
