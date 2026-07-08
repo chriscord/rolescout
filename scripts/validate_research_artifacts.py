@@ -36,8 +36,10 @@ Exit 1 on any FAIL. Warnings don't fail.
 """
 import csv
 import json
+import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import store_io
@@ -45,6 +47,11 @@ import store_io
 from schema_defs import RESEARCH_DECISIONS as VALID_DECISIONS
 from schema_defs import RESEARCH_REASON_CODES as VALID_REASONS
 VALID_SOURCE_STATUS = {"planned", "ok", "blocked", "empty", "failed"}
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except AttributeError:
+    pass
 # Below this many non-seed peers, a seed looks searched literally rather than
 # expanded as a market-map exemplar (search-workflow.md Phase 2). WARN only —
 # structural, name-free; the ~5 target lives in the instructions, this flags the
@@ -54,6 +61,78 @@ MIN_ARCHETYPE_PEERS_WARN = 2
 
 def norm(name: str) -> str:
     return "".join(c for c in name.lower() if c.isalnum())
+
+
+def _clean_yaml_scalar(value: str) -> str:
+    value = value.split("#", 1)[0].strip().strip("'\"")
+    return value
+
+
+def _urls_in_text(value: str) -> list[str]:
+    return re.findall(r"https?://[^\\s,'\"\]\)]+", value)
+
+
+def _registry_self_hosted() -> dict[str, dict]:
+    """Tiny parser for references/search-source-registry.yaml self-hosted entries.
+
+    PyYAML is intentionally not a runtime dependency. The registry shape we need
+    here is simple: company name plus authoritative careers/search/posting/mirror
+    URLs. `json_api` is deliberately not treated as authoritative by itself
+    because some entries record stale/optional APIs next to the real careers
+    listing path.
+    """
+    reg_path = Path(__file__).resolve().parents[1] / "references" / "search-source-registry.yaml"
+    try:
+        lines = reg_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    out, current = {}, None
+    in_self_hosted = False
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("self_hosted_careers:"):
+            in_self_hosted = True
+            continue
+        if in_self_hosted and stripped.startswith("job_boards_and_aggregators:"):
+            break
+        if not in_self_hosted:
+            continue
+        if stripped.startswith("- name:"):
+            if current:
+                out[norm(current["name"])] = current
+            current = {"name": _clean_yaml_scalar(stripped.split(":", 1)[1]),
+                       "urls": []}
+            continue
+        if not current:
+            continue
+        for key in ("careers_search_url", "posting_url"):
+            if stripped.startswith(key + ":"):
+                val = _clean_yaml_scalar(stripped.split(":", 1)[1])
+                if val.startswith("http"):
+                    current["urls"].append(val)
+        if stripped.startswith("mirrors:"):
+            current["urls"].extend(_urls_in_text(stripped))
+    if current:
+        out[norm(current["name"])] = current
+    return out
+
+
+def _url_tokens(urls: list[str]) -> list[str]:
+    tokens = []
+    for url in urls:
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            continue
+        path = parsed.path.rstrip("/")
+        tokens.append((parsed.netloc + path).lower())
+        tokens.append(parsed.netloc.lower())
+    # Check longest tokens first; host-only tokens are fallback for mirrors.
+    return sorted({t for t in tokens if t}, key=len, reverse=True)
+
+
+def _has_registry_source(haystack: str, entry: dict) -> bool:
+    hay = haystack.lower().replace("\\", "/")
+    return any(token and token in hay for token in _url_tokens(entry.get("urls", [])))
 
 
 def main() -> int:
@@ -200,8 +279,11 @@ def main() -> int:
                    "todo", "next run", "next pass", "not yet")
 
     seen_companies = set()
+    kept_companies = set()
     for i, c in enumerate(cands):
         seen_companies.add(norm(c.get("company", "")))
+        if c.get("decision") == "kept":
+            kept_companies.add(norm(c.get("company", "")))
         if c.get("decision") not in VALID_DECISIONS:
             fails.append(f"log candidate {i}: invalid decision '{c.get('decision')}'")
         if not str(c.get("reason", "")).strip() and c.get("decision") != "kept":
@@ -230,6 +312,44 @@ def main() -> int:
                 fails.append(f"log candidate {i} ({c.get('company')}): kept without job_id")
             elif job_ids and jid not in job_ids:
                 fails.append(f"log candidate {i}: kept job_id '{jid}' not in job_list store")
+
+    # Self-hosted careers registry enforcement for declared seeds: if the
+    # maintained registry says a seed's canonical source is self-hosted, final
+    # artifacts must show that source family was actually used. A guessed ATS
+    # token or stale API alone cannot prove absence.
+    if seeds_declared:
+        registry_self_hosted = _registry_self_hosted()
+        for s in seeds_declared:
+            ns = norm(s)
+            pc = plan_companies.get(ns)
+            if not pc:
+                continue
+            reg_entry = registry_self_hosted.get(ns)
+            plan_hay = " ".join(
+                (str(src.get("type", "")) + " " + str(src.get("url", ""))).lower()
+                for src in pc.get("sources", []))
+            fallback_hay = " ".join(str(x).lower() for x in pc.get("fallbacks_used", []))
+            query_hay = " ".join(
+                (str(q.get("scope", "")) + " " + str(q.get("q", "")) + " "
+                 + str(q.get("source_url", ""))).lower()
+                for q in queries
+                if norm(str(q.get("company", ""))) == ns or ns in norm(str(q.get("q", ""))))
+            hay = f"{plan_hay} {fallback_hay} {query_hay}"
+            if reg_entry and not _has_registry_source(hay, reg_entry):
+                fails.append(
+                    f"declared seed '{s}' is listed in the self-hosted careers registry, "
+                    "but source-plan/research-log do not show its registry careers/search/"
+                    "posting source family — do not conclude absence from guessed ATS "
+                    "tokens, stale APIs, or generic search plans")
+            planned = [src for src in pc.get("sources", [])
+                       if src.get("status") == "planned"
+                       and "linkedin" not in str(src.get("type", "")).lower()]
+            if ns not in kept_companies and planned:
+                labels = [f"{src.get('type')} {src.get('url')}" for src in planned]
+                fails.append(
+                    f"declared seed '{s}' has 0 kept rows while non-LinkedIn source(s) "
+                    f"remain planned-not-attempted: {labels} — finish the fallback ladder "
+                    "or record an evidence-backed exclusion before PASS")
 
     # board-enumeration completeness: enumerated postings must all be accounted
     # for in the log (per-candidate entries and/or bulk roll-ups with `count`).

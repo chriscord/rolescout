@@ -24,6 +24,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except AttributeError:
+    pass
+
 
 def load_csv(p):
     if not p.exists():
@@ -252,7 +258,7 @@ def main() -> int:
         if r.returncode == 0:
             ok.append(("L2", "search artifacts", "validate_research_artifacts PASS"))
         else:
-            add("P1", "L2", "search artifacts", r.stdout.strip()[-400:])
+            add("P0", "L2", "search artifacts", r.stdout.strip()[-400:])
 
     # ---- report ----
     # run-state classification: a run that stopped before producing artifacts must

@@ -1027,7 +1027,7 @@ function renderPrepPanel(){
   const active = items.find(a=>a.path===selectedPath) || items[0];
   const pickerClass = kind === 'interview' ? 'interview-picker' : 'prep-artifact-tabs';
   panel.innerHTML = `<div class="${pickerClass}">` + items.map(a=>
-    `<button class="${a.path===active.path?'on':''}" onclick="selectPrepArtifact('${kind}','${esc(a.path)}')">
+    `<button class="${a.path===active.path?'on':''}" onclick="selectPrepArtifact(${jsArg(kind)},${jsArg(a.path)})">
       ${esc(artifactLabel(a))}</button>`).join('') + `</div>
     <div id="prepArtifact"><p class="muted">loading…</p></div>`;
   loadPrepArtifact(active);
@@ -1035,28 +1035,32 @@ function renderPrepPanel(){
 async function loadPrepArtifact(item){
   const mount = $('prepArtifact');
   if (!mount) return;
-  if (!prepState.cache[item.path]){
-    prepState.cache[item.path] = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(item.path)}`);
-  }
-  let extras = null;
-  if (item.kind === 'resume'){
-    const dir = item.path.replace(/\/[^/]*$/, '');
-    for (const n of ['resume-score.md', 'resume-validation.md']){
-      const pth = `${dir}/${n}`;
-      if (!(pth in prepState.cache)){
-        prepState.cache[pth] = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(pth)}`);
-      }
+  try {
+    if (!prepState.cache[item.path]){
+      prepState.cache[item.path] = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(item.path)}`);
     }
-    extras = {score: prepState.cache[`${dir}/resume-score.md`],
-              validation: prepState.cache[`${dir}/resume-validation.md`]};
+    let extras = null;
+    if (item.kind === 'resume'){
+      const dir = item.path.replace(/\/[^/]*$/, '');
+      for (const n of ['resume-score.md', 'resume-validation.md']){
+        const pth = `${dir}/${n}`;
+        if (!(pth in prepState.cache)){
+          prepState.cache[pth] = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(pth)}`);
+        }
+      }
+      extras = {score: prepState.cache[`${dir}/resume-score.md`],
+                validation: prepState.cache[`${dir}/resume-validation.md`]};
+    }
+    if (!$('prepArtifact') || prepState.selected[prepState.kind] !== item.path) return;
+    const res = prepState.cache[item.path];
+    mount.innerHTML = renderPrepArtifact(item, res, extras);
+  } catch (err) {
+    mount.innerHTML = `<p class="muted">artifact load failed: ${esc(err && err.message ? err.message : err)}</p>`;
   }
-  if (!$('prepArtifact') || prepState.selected[prepState.kind] !== item.path) return;
-  const res = prepState.cache[item.path];
-  mount.innerHTML = renderPrepArtifact(item, res, extras);
 }
 function renderPrepArtifact(item, res, extras){
   if (res.error) return `<p class="muted">${esc(res.error)}</p>`;
-  const source = `<a class="source-link" href="#" onclick="previewFile('${esc(item.path)}');return false">
+  const source = `<a class="source-link" href="#" onclick="previewFile(${jsArg(item.path)});return false">
     ${esc(item.path)}${res.truncated?' (truncated)':''}</a>`;
   if (item.kind === 'resume') return source + renderResumeArtifact(res.content, extras, item);
   if (item.kind === 'linkedin') return source + renderLinkedInArtifact(res.content);
