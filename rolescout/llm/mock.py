@@ -20,9 +20,11 @@ class MockProvider:
     def model_config(self) -> dict:
         return {"provider": "mock", "model": "canned-envelope-v1"}
 
-    def run(self, workflow: str, context: dict, on_progress=None) -> dict:
+    def run(self, workflow: str, context: dict, on_progress=None,
+            model_workflow: str | None = None) -> dict:
         """Return the canned envelope for a workflow. `context`/`on_progress` are
         accepted for interface parity with the live providers."""
+        del model_workflow
         p = ENVELOPES_DIR / f"{workflow}.json"
         if not p.exists():
             raise FileNotFoundError(f"no canned envelope for workflow '{workflow}' ({p})")

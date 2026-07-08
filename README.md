@@ -59,6 +59,36 @@ python -m pip install --upgrade pip setuptools
 python -m pip install -e ".[xlsx]"
 ```
 
+Optional render QA for resume DOCX files:
+
+RoleScout can generate resume DOCX files without these tools. Install them only
+if you want visual render checks for one-page layout verification. Without them,
+RoleScout records render QA as blocked and still runs structural DOCX checks.
+
+```bash
+# Python package used by the render checker
+python -m pip install -e ".[render]"
+# Or include the spreadsheet extra too:
+python -m pip install -e ".[xlsx,render]"
+
+# macOS
+brew install libreoffice poppler
+
+# Ubuntu/Debian
+sudo apt update
+sudo apt install libreoffice poppler-utils
+```
+
+```powershell
+# Windows
+python -m pip install -e ".[xlsx,render]"
+winget install TheDocumentFoundation.LibreOffice
+winget install oschwartz10612.Poppler
+```
+
+The optional render stack is: `pdf2image` (Python), LibreOffice/`soffice`, and
+Poppler/`pdftoppm`.
+
 If Python is too old:
 
 ```bash

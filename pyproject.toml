@@ -21,6 +21,7 @@ dependencies = []
 
 [project.optional-dependencies]
 xlsx = ["openpyxl"]          # xlsx pipeline view; store works without it
+render = ["pdf2image"]       # optional DOCX visual render QA; also needs OS binaries below
 # Rendered-browser capture for JS-heavy careers sites (Meta, TikTok, Workday, …).
 # Not bundled by default (browser binaries are large); after install run
 # `python -m playwright install chromium`. The agent installs this on demand when

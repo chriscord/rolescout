@@ -120,10 +120,12 @@ class ExternalCliProvider:
                                  f"{(r.stderr or r.stdout).strip()[:400]}")
         return r.stdout.strip()
 
-    def run(self, workflow: str, context: dict, on_progress=None) -> dict:
+    def run(self, workflow: str, context: dict, on_progress=None,
+            model_workflow: str | None = None) -> dict:
         prompt = prompts.workflow_prompt(workflow, context)
         project = Path(context["project"])
-        cmd, stdin_prompt, profile = _build_command(prompt, project=project, workflow=workflow)
+        profile_key = model_workflow or workflow
+        cmd, stdin_prompt, profile = _build_command(prompt, project=project, workflow=profile_key)
         env = {**os.environ, "RECRUITING_PROJECT_DIR": str(project),
                "ROLESCOUT_TASK_MODEL": profile["model"],
                "ROLESCOUT_TASK_EFFORT": profile.get("effort", ""),
@@ -187,7 +189,7 @@ class ExternalCliProvider:
         events.append({"type": "result",
                        "summary": (raw_lines[-1] if raw_lines else "")[:2000]})
         return {"workflow": workflow,
-                "model_config": self.model_config(workflow),
+                "model_config": self.model_config(profile_key),
                 "streamed": True,
                 "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0,
                           "num_turns": 0,

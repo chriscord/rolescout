@@ -7,6 +7,8 @@ The public runtime is local-output only; the runner rejects external-action even
 
 from __future__ import annotations
 
+import json
+
 from ..paths import repo_root
 
 RUN_CONTRACT = """
@@ -14,6 +16,8 @@ HEADLESS RUN CONTRACT (rolescout CLI):
 - Work ONLY on the search project at: {project}
   (env RECRUITING_PROJECT_DIR is set; scripts resolve it automatically.)
 - Follow AGENTS.md and the relevant skill exactly; run validators before writes.
+- Do not read external helper skills. Use only the RoleScout skill text included
+  in this prompt plus the deterministic `scripts/` commands named here.
 - NEVER perform or request an external action. Do not submit applications, send
   messages, save LinkedIn edits, upload files, schedule events, accept terms, or
   share sensitive data. If the task appears to require one, produce local
@@ -98,12 +102,103 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "focused prep, applications, or tracker artifacts.\n"
                    "- If LinkedIn content is missing, continue from resume/materials and "
                    "list LinkedIn-dependent facts as Open Questions.")
+    if workflow == "search" and context.get("search_phase"):
+        phase = context["search_phase"]
+        if phase == "plan":
+            extras += ("\n\n## Search orchestration phase: lead plan\n"
+                       "- Build ONLY Phases 1-3: `targets/opportunity-thesis.md`, "
+                       "`targets/company-universe.json`, and `targets/source-plan.json`.\n"
+                       "- Use `python scripts/resolve_company_sources.py <company> --json` "
+                       "as the deterministic official-first source resolver input when "
+                       "building per-company source plans.\n"
+                       "- Do not capture postings, do not write `research-log.json`, do not "
+                       "persist rows, do not run LinkedIn Jobs, and do not score. The "
+                       "RoleScout runner will spawn capture shards after this phase.")
+        elif phase == "capture_shard":
+            shard = json.dumps(context.get("search_shard", {}), indent=2, ensure_ascii=False)
+            extras += ("\n\n## Search orchestration phase: capture shard\n"
+                       "- Operate ONLY on the assigned non-LinkedIn company shard below.\n"
+                       f"- Write ONLY `{context.get('search_part_path')}` and JD snapshots "
+                       "under `targets/jobs/`. Do not write `targets/research-log.json`, "
+                       "coverage audit, source plan, job_list rows, tracker rows, profile "
+                       "files, or any focused prep artifact.\n"
+                       "- Do not run LinkedIn Jobs, do not ask the user for approval, and "
+                       "do not persist rows. The lead/runner merges and persists once.\n"
+                       "- Use deterministic scripts for fetch/source mechanics. Do not "
+                       "write one-off Python for source resolution, fetch, browser probe, "
+                       "merge, or persistence. If a needed parser/adapter is missing, "
+                       "report that capability gap instead of inventing a fragile script.\n"
+                       "- Use only the shard-minimal skill context provided here; do not "
+                       "do strategy scoring or target-priority modeling inside a capture "
+                       "shard.\n"
+                       "Assigned shard JSON:\n"
+                       f"```json\n{shard}\n```")
+        elif phase == "finalize":
+            failed_shards = context.get("search_failed_shards") or []
+            partial_reasons = context.get("search_partial_reasons") or []
+            partial_note = ""
+            if failed_shards or partial_reasons:
+                partial_note = ("\n- PARTIAL RUN CONTEXT: the runner recorded failed/"
+                                "skipped sub-work. You MUST still persist valid kept "
+                                "rows, and you MUST list the failed scope in "
+                                "`targets/coverage-audit.md` and the user summary. "
+                                f"failed_shards={json.dumps(failed_shards, ensure_ascii=False)}; "
+                                f"partial_reasons={json.dumps(partial_reasons, ensure_ascii=False)}")
+            extras += ("\n\n## Search orchestration phase: finalize\n"
+                       "- The runner has already merged shard parts with "
+                       "`scripts/merge_research_parts.py` and attempted the runner-owned "
+                       "LinkedIn Jobs probe with `scripts/probe_linkedin_jobs.py`.\n"
+                       "- Read `targets/research-log.json`; honor any LinkedIn Jobs "
+                       "`observed` value already recorded there. Do not spawn browser "
+                       "automation from inside Codex and do not write one-off browser code.\n"
+                       "- Finish `targets/coverage-audit.md`, prepare validated job row "
+                       "JSON under `<project>/data/`, then persist with "
+                       "`python scripts/persist_job_rows.py <rows.json> --project <project>`.\n"
+                       "- If `coverage-audit.md` is missing or stale, run "
+                       "`python scripts/generate_coverage_audit.py <project>` before "
+                       "adding any human-readable final notes.\n"
+                       "- Run `python scripts/validate_research_artifacts.py <project>` "
+                       "before reporting."
+                       + partial_note)
+        elif phase == "legacy":
+            extras += ("\n\n## Search orchestration phase: legacy fallback\n"
+                       "- The lead phase did not produce a usable source plan. Run the "
+                       "standard end-to-end search, but still use deterministic scripts "
+                       "for source resolution, merge, LinkedIn probe, and row persistence.")
     extras += ("\n\n## Research tooling\n"
                "- For plain public JSON/HTML fetches use `python scripts/fetch_url.py "
-               "<url>` (stdlib urllib, UTF-8 output). Do NOT assume `requests` is "
-               "installed — RoleScout ships zero runtime dependencies. Add `--json` to "
-               "pretty-print API responses. You do not need to write your own fetch "
-               "script.\n"
+               "<url> --out <project>/data/source-cache.json --json` for JSON APIs or "
+               "`python scripts/fetch_url.py <url> --out <project>/data/source-cache.html` "
+               "for HTML. The script prints only a bounded summary for JSON; read the "
+               "`--out` file when full content is needed. Do NOT pipe huge ATS JSON "
+               "through stdout, and do NOT assume `requests` is installed — RoleScout "
+               "ships zero runtime dependencies.\n"
+               "- Do not write one-off Python for common RoleScout mechanics. Use the "
+               "product scripts instead: `scripts/resolve_company_sources.py` for "
+               "official-first source planning, `scripts/fetch_url.py` for public "
+               "fetches, `scripts/merge_research_parts.py` for shard merge, "
+               "`scripts/generate_coverage_audit.py` for deterministic coverage "
+               "audit scaffolding, "
+               "`scripts/probe_linkedin_jobs.py` for the runner-owned LinkedIn Jobs "
+               "observation, and `scripts/persist_job_rows.py` for normalize/validate/"
+               "upsert. Use `scripts/validate_linkedin_review.py` and "
+               "`scripts/build_interview_context.py` plus "
+               "`scripts/validate_interview_prep.py` for prep-interview context "
+               "and artifact quality/structure. "
+               "Use `scripts/validate_application_packets.py` for apply packet "
+               "structure and tracker linkage. "
+               "Use `scripts/render_docx_gate.py` before attempting DOCX render QA. "
+               "If a deterministic adapter is missing, report the capability "
+               "gap instead of generating throwaway Python inside the run.\n"
+               "- For URL canonicalization/job IDs, use "
+               "`python scripts/normalize_job_url.py --url <url> --company <company> "
+               "--title <title>` or the forgiving positional form "
+               "`python scripts/normalize_job_url.py <url> <company> <title>`. For row "
+               "sets, prefer `python scripts/normalize_job_url.py --json <rows.json>`.\n"
+               "- For ambiguous nearby locations, use "
+               "`python scripts/location_eligibility.py <location> --target <city> ...` "
+               "before excluding. Same-metro but non-exact cities should be `review` "
+               "unless the project explicitly says exact-city only.\n"
                "- Encoding discipline (critical on Windows): every Python file/subprocess "
                "read or write MUST pass `encoding=\"utf-8\"`; add `errors=\"replace\"` when "
                "reading fetched pages, user files, or OS-command output. Never rely on the "
@@ -122,7 +217,8 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                "fails there silently drops the rows you captured.\n"
                "- Not every employer uses a third-party ATS; many self-host their careers "
                "site and publish no ATS board at all — that absence is expected, not a miss, "
-               "and you detect it (ATS-slug probes come back empty), never assume it from a "
+               "and you detect it (official careers/source resolver first, ATS-slug probes "
+               "only as fallback), never assume it from a "
                "company's name. When there is no ATS board, treat the official careers site "
                "as a first-class source: consult `references/search-source-registry.yaml` -> "
                "`self_hosted_careers` (a curated set of examples) and use the matching "
@@ -131,9 +227,9 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                "its careers site and apply the same method. Never mark such a seed failed "
                "just because it has no ATS board or its page is a JS shell.\n"
                "- If a careers page renders its listings only via client-side JavaScript, do "
-               "not settle for empty raw HTML. Use a browser runtime (Chrome DevTools or "
-               "Playwright); if neither is installed, INSTALL Playwright: `python -m pip "
-               "install playwright && python -m playwright install chromium`, then render. "
+               "not settle for empty raw HTML. Use supported local browser tooling when "
+               "available; if it is not available in the current environment, record the "
+               "connector/browser gap and continue the rest of the source plan. "
                "Server-rendered or JSON-API careers pages need no browser. Reading public "
                "pages is allowed, but never enter credentials, save profile edits, submit "
                "applications, schedule events, or send messages for the user.\n"
@@ -195,6 +291,37 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "rest of the list. Dead URLs: mark posting_status per what you "
                    "observe and score only on available evidence, flagging the gap.")
 
+    if workflow == "prep-interview":
+        extras += ("\n\n## Prep-interview industry thesis contract\n"
+                   "- The runner has already attempted "
+                   "`python scripts/build_interview_context.py <project>`; read "
+                   "`interviews/interview-context.json` before drafting.\n"
+                   "- For each focused position, web-search from the scaffolded "
+                   "`web_search_queries` using the concrete {company} and "
+                   "{business arm}/role-title terms. Fill an industry thesis in "
+                   "your working notes before writing `## The Whys`.\n"
+                   "- Industry means the company/product market, customer/user "
+                   "system, business model, and current market tension. It is not "
+                   "the job function, role family, or job_group.\n"
+                   "- `Why this industry`, `Why this company`, and `Why this "
+                   "position` must each use at least one position-specific signal "
+                   "from web research, JD context, glossary/news, or official "
+                   "company/product context.\n"
+                   "- Run `python scripts/validate_interview_prep.py <project>`. "
+                   "If it returns `QUALITY`, retry The Whys from the industry "
+                   "thesis instead of deleting or withholding the artifacts. If a "
+                   "bounded retry still leaves quality issues, keep the artifacts "
+                   "and report the remaining scope as partial.")
+        if context.get("prep_interview_quality_retry"):
+            extras += ("\n\n## Prep-interview quality retry\n"
+                       "The previous prep-interview validator returned retryable "
+                       "QUALITY issues. Edit only the flagged `## The Whys` rows "
+                       "and any necessary source/glossary support; keep valid "
+                       "story-bank and prep sections intact. Validator output:\n"
+                       "```text\n"
+                       f"{context['prep_interview_quality_retry']}\n"
+                       "```")
+
     if workflow == "search":
         extras += ("\n\n## Job sources (search runs)\n"
                    "- RUN ORDER IS FIXED: complete Phases 1-3 (opportunity thesis, company "
@@ -221,10 +348,13 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "connected, user logged in, agent stopped anyway).\n"
                    "- ATS boards (Greenhouse including job-boards.greenhouse.io, Lever, "
                    "Ashby, Workable, SmartRecruiters, Workday): ENUMERATE the "
-                   "full board for target locations and judge every posting, logging each "
-                   "skip. Never keyword-filter a board at the source - that hides postings "
-                   "from the log entirely. Record a board_enumeration query with the total "
-                   "count per seed company.\n"
+                   "board with source-supported target-location filters first, then judge "
+                   "every posting returned and log each skip. Do not fetch full worldwide "
+                   "JD bodies unless the source lacks usable filters; use lightweight "
+                   "listing metadata and bulk roll-ups for out-of-location/out-of-family "
+                   "postings. Never keyword-filter a board at the source - that hides "
+                   "postings from the log entirely. Record a board_enumeration query with "
+                   "the total count per seed company.\n"
                    "- Only when blockage is OBSERVED: finish everything else first (write "
                    "all artifacts, persist validated rows, and note the pending LinkedIn "
                    "pass in coverage-audit.md). Tell the user what manual login or rerun "

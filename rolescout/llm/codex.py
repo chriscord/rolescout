@@ -34,6 +34,8 @@ from . import prompts
 DEFAULT_EXEC_ARGS = ["--sandbox", "workspace-write", "--json"]
 TIMEOUT_S = int(os.environ.get("CODEX_TIMEOUT_S", "1800"))
 PINNED_CONFIG_KEYS = {"model", "model_reasoning_effort"}
+ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"]
+ISOLATION_VALUE_FLAGS = {"--profile", "-p"}
 
 
 def binary() -> str | None:
@@ -72,8 +74,9 @@ class CodexProvider:
                 "(ChatGPT account; usage bills to your subscription)")
         # status None: old CLI without `login status` — proceed, exec will surface auth errors
 
-    def model_config(self, workflow: str | None = None) -> dict:
-        profile = model_profiles.codex_profile_for(workflow)
+    def model_config(self, workflow: str | None = None,
+                     profile: dict | None = None) -> dict:
+        profile = profile or model_profiles.codex_profile_for(workflow)
         return {"provider": "codex-cli",
                 "model": profile["model"],
                 "effort": profile["effort"],
@@ -84,11 +87,20 @@ class CodexProvider:
 
     @staticmethod
     def _strip_pinned_model_args(args: list[str]) -> list[str]:
-        """Remove model/effort args from CODEX_EXEC_ARGS so workflow profiles win."""
+        """Remove env-supplied args that would override RoleScout's run contract."""
         out: list[str] = []
         i = 0
         while i < len(args):
             arg = args[i]
+            if arg in ISOLATION_FLAGS:
+                i += 1
+                continue
+            if arg in ISOLATION_VALUE_FLAGS:
+                i += 2
+                continue
+            if arg.startswith("--profile=") or arg.startswith("-p="):
+                i += 1
+                continue
             if arg in ("--model", "-m"):
                 i += 2
                 continue
@@ -119,13 +131,17 @@ class CodexProvider:
         return out
 
     def _exec_command(self, workflow: str | None = None,
-                      sandbox_write: bool = True) -> list[str]:
+                      sandbox_write: bool = True,
+                      profile: dict | None = None) -> list[str]:
         args = os.environ.get("CODEX_EXEC_ARGS")
         extra = shlex.split(args) if args else list(DEFAULT_EXEC_ARGS)
         extra = self._strip_pinned_model_args(extra)
+        extra += ISOLATION_FLAGS
         if not sandbox_write:
             extra = ["read-only" if a == "workspace-write" else a for a in extra]
-        _, profile_args = model_profiles.codex_cli_args(workflow)
+        profile_args = (model_profiles.codex_cli_args_for_profile(profile)
+                        if profile is not None
+                        else model_profiles.codex_cli_args(workflow)[1])
         extra += profile_args
         # Prompt is passed on stdin. Passing the full RoleScout prompt as argv
         # exceeds Windows' command-line limit on real search runs.
@@ -177,12 +193,40 @@ class CodexProvider:
 
     # ---- workflow run (envelope contract; streams line-by-line) ----
 
-    def run(self, workflow: str, context: dict, on_progress=None) -> dict:
+    @staticmethod
+    def _retryable_model_error(message: str) -> bool:
+        text = message.lower()
+        return ("capacity" in text or "try a different model" in text
+                or "model is overloaded" in text or "temporarily unavailable" in text)
+
+    def run(self, workflow: str, context: dict, on_progress=None,
+            model_workflow: str | None = None) -> dict:
         """Streaming execution: every codex output line reaches `on_progress` the
         moment it appears (the CLI/web UI show live activity instead of a blinking
         cursor); the envelope is assembled from the same stream at the end."""
         prompt = prompts.workflow_prompt(workflow, context)
-        cmd = self._exec_command(workflow=workflow)
+        profile_key = model_workflow or workflow
+        profiles = model_profiles.codex_profile_variants(profile_key)
+        last_error: RoleScoutError | None = None
+        for idx, profile in enumerate(profiles):
+            try:
+                return self._run_once(workflow, context, prompt, profile, on_progress)
+            except RoleScoutError as e:
+                last_error = e
+                if idx >= len(profiles) - 1 or not self._retryable_model_error(str(e)):
+                    raise
+                fallback = profiles[idx + 1]
+                if on_progress:
+                    on_progress(
+                        "model fallback: "
+                        f"{profile['model']}/{profile.get('effort', '')} failed with capacity; "
+                        f"retrying {fallback['model']}/{fallback.get('effort', '')}"
+                    )
+        raise last_error or RoleScoutError("codex exec failed before starting")
+
+    def _run_once(self, workflow: str, context: dict, prompt: str,
+                  profile: dict, on_progress=None) -> dict:
+        cmd = self._exec_command(workflow=workflow, profile=profile)
         # PYTHONUTF8/PYTHONIOENCODING force UTF-8 in the agent's Python subprocesses so
         # writing non-ASCII (e.g. "•") doesn't crash on Windows cp949/cp1252 consoles.
         env = {**os.environ, "RECRUITING_PROJECT_DIR": str(context["project"]),
@@ -253,7 +297,7 @@ class CodexProvider:
         events.append({"type": "result",
                        "summary": (texts[-1] if texts else "")[:2000]})
         return {"workflow": workflow,
-                "model_config": self.model_config(workflow),
+                "model_config": self.model_config(workflow, profile),
                 "streamed": True,  # progress already shown live; don't re-print
                 "usage": {"cost_usd": 0.0, "tokens_in": tokens_in,
                           "tokens_out": tokens_out, "num_turns": 0,

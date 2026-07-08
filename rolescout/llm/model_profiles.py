@@ -11,7 +11,7 @@ from typing import Any
 from ..paths import RoleScoutError, home_dir
 
 CONFIG_FILE = "model-profiles.json"
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 ALLOWED_CODEX_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 FALLBACK_PROFILES: dict[str, Any] = {
@@ -21,7 +21,14 @@ FALLBACK_PROFILES: dict[str, Any] = {
         "workflows": {
             "profile-intake": {"model": "gpt-5.5", "effort": "high"},
             "search": {"model": "gpt-5.5", "effort": "medium"},
-            "score": {"model": "gpt-5.5", "effort": "medium"},
+            "search-plan": {"model": "gpt-5.5", "effort": "medium",
+                            "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
+            "search-capture-shard": {"model": "gpt-5.4", "effort": "medium",
+                                     "fallbacks": [{"model": "gpt-5.3-codex-spark", "effort": "high"}]},
+            "search-finalize": {"model": "gpt-5.5", "effort": "medium",
+                                "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
+            "score": {"model": "gpt-5.5", "effort": "medium",
+                      "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
             "prep": {"model": "gpt-5.5", "effort": "high"},
             "prep-strategy": {"model": "gpt-5.5", "effort": "xhigh"},
             "prep-resume": {"model": "gpt-5.5", "effort": "high"},
@@ -36,7 +43,14 @@ FALLBACK_PROFILES: dict[str, Any] = {
         "workflows": {
             "profile-intake": {"model": "gpt-5.5", "effort": "high"},
             "search": {"model": "gpt-5.5", "effort": "medium"},
-            "score": {"model": "gpt-5.5", "effort": "medium"},
+            "search-plan": {"model": "gpt-5.5", "effort": "medium",
+                            "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
+            "search-capture-shard": {"model": "gpt-5.4", "effort": "medium",
+                                     "fallbacks": [{"model": "gpt-5.3-codex-spark", "effort": "high"}]},
+            "search-finalize": {"model": "gpt-5.5", "effort": "medium",
+                                "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
+            "score": {"model": "gpt-5.5", "effort": "medium",
+                      "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
             "prep": {"model": "gpt-5.5", "effort": "high"},
             "prep-strategy": {"model": "gpt-5.5", "effort": "xhigh"},
             "prep-resume": {"model": "gpt-5.5", "effort": "high"},
@@ -106,6 +120,12 @@ def _migrate_known_defaults(custom: dict[str, Any]) -> tuple[dict[str, Any], boo
         if isinstance(prep_strategy, dict) and prep_strategy.get("effort") == "high":
             prep_strategy["effort"] = "xhigh"
         workflows.setdefault("profile-intake", {"model": "gpt-5.5", "effort": "high"})
+        workflows.setdefault("search-plan", {"model": "gpt-5.5", "effort": "medium",
+                                             "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]})
+        workflows.setdefault("search-capture-shard", {"model": "gpt-5.4", "effort": "medium",
+                                                      "fallbacks": [{"model": "gpt-5.3-codex-spark", "effort": "high"}]})
+        workflows.setdefault("search-finalize", {"model": "gpt-5.5", "effort": "medium",
+                                                 "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]})
     migrated["version"] = CURRENT_VERSION
     return migrated, migrated != custom
 
@@ -163,7 +183,26 @@ def _profile_for(provider: str, workflow: str | None, *,
         raise RoleScoutError(
             f"model profile for workflow {workflow!r} has unsupported effort "
             f"{effort!r}; use one of: {allowed}")
-    return {"model": model, "effort": effort, "settings_file": str(path)}
+    out: dict[str, Any] = {"model": model, "effort": effort, "settings_file": str(path)}
+    fallbacks = merged.get("fallbacks", [])
+    if isinstance(fallbacks, list):
+        clean = []
+        for fallback in fallbacks:
+            if not isinstance(fallback, dict):
+                continue
+            f_model = str(fallback.get("model") or "").strip()
+            f_effort = str(fallback.get("effort") or effort or "").strip().lower()
+            if not f_model:
+                continue
+            if validate_effort and f_effort and f_effort not in ALLOWED_CODEX_EFFORTS:
+                allowed = ", ".join(sorted(ALLOWED_CODEX_EFFORTS))
+                raise RoleScoutError(
+                    f"model profile fallback for workflow {workflow!r} has unsupported "
+                    f"effort {f_effort!r}; use one of: {allowed}")
+            clean.append({"model": f_model, "effort": f_effort})
+        if clean:
+            out["fallbacks"] = clean
+    return out
 
 
 def codex_profile_for(workflow: str | None) -> dict[str, str]:
@@ -178,7 +217,25 @@ def external_cli_profile_for(workflow: str | None) -> dict[str, str]:
 
 def codex_cli_args(workflow: str | None) -> tuple[dict[str, str], list[str]]:
     profile = codex_profile_for(workflow)
+    return profile, codex_cli_args_for_profile(profile)
+
+
+def codex_cli_args_for_profile(profile: dict[str, str]) -> list[str]:
     args = ["--model", profile["model"]]
     if profile.get("effort"):
         args += ["-c", f'model_reasoning_effort="{profile["effort"]}"']
-    return profile, args
+    return args
+
+
+def codex_profile_variants(workflow: str | None) -> list[dict[str, str]]:
+    profile = codex_profile_for(workflow)
+    variants = [profile]
+    for fallback in profile.get("fallbacks", []):
+        item = {
+            "model": fallback["model"],
+            "effort": fallback.get("effort", profile.get("effort", "")),
+            "settings_file": profile["settings_file"],
+            "fallback_for": profile["model"],
+        }
+        variants.append(item)
+    return variants
