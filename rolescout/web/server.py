@@ -210,8 +210,9 @@ class RunManager:
                 cancel_event=entry["_cancel"])
             entry["summary"] = rec.get("summary", "")
             status = rec.get("status")
-            entry["status"] = ("failed" if status == "failed"
-                               else "cancelled" if status == "cancelled" else "done")
+            entry["status"] = (status if status in ("failed", "blocked",
+                                                    "partial", "cancelled")
+                               else "done")
         except RoleScoutError as e:
             self._append(entry, "error", str(e))
             entry["status"] = "failed"
@@ -220,6 +221,8 @@ class RunManager:
             entry["status"] = "failed"
         self._append(entry, "done",
                      {"done": "Run completed.",
+                      "partial": "Run completed with partial results.",
+                      "blocked": "Run blocked before execution.",
                       "cancelled": "Run cancelled."}.get(entry["status"], "Run failed."))
 
     def decide(self, rid: str, approve: bool) -> bool:
@@ -301,7 +304,10 @@ class ProfileRunManager:
                 rec = workflows.run_profile_intake(person, on_event=on_event)
                 with self.lock:
                     entry["summary"] = rec.get("summary", "")
-                    entry["status"] = "failed" if rec.get("status") == "failed" else "done"
+                    status = rec.get("status")
+                    entry["status"] = (status if status in ("failed", "blocked",
+                                                            "partial", "cancelled")
+                                       else "done")
             except Exception as e:
                 with self.lock:
                     entry["summary"] = str(e)

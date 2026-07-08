@@ -10,7 +10,7 @@
 --bg:#f6f7fb; --surface:#fff; --surface-2:#f1f4f9; --surface-3:#e8ecf5; --border:#d9deeb;
 --text:#182033; --muted:#667085; --accent:var(--brand); --accent-hover:var(--brand-hover);
 --accent-soft:var(--brand-soft); --green:#20785f; --green-bg:#e9f6f1; --red:#c2415d;
---red-bg:#fdecef; --header:var(--navy); --radius:8px; --header-h:56px;
+--red-bg:#fdecef; --amber:#b7791f; --header:var(--navy); --radius:8px; --header-h:56px;
 --panel:var(--navy); --panel-2:var(--navy-2); --panel-border:#374151; --panel-text:#e5e7eb;
 --panel-muted:#a7b0c0; --warn:#b7a6ff; --warn-bg:#211c38; }
 * { box-sizing:border-box; margin:0; padding:0; }
@@ -135,7 +135,8 @@ td.score { font-weight:700; text-align:right; }
 .inbox-item { border-left:3px solid var(--border); padding:.5rem .8rem; margin:.45rem 0;
 background:var(--surface); border-radius:0 8px 8px 0; font-size:.85rem; }
 .inbox-item.overdue { border-left-color:var(--red); } .inbox-item.today,.inbox-item.gap { border-left-color:var(--accent); }
-.inbox-item.run-done { border-left-color:var(--green); } .inbox-item.run-failed { border-left-color:var(--red); }
+.inbox-item.run-done { border-left-color:var(--green); } .inbox-item.run-partial { border-left-color:var(--amber); }
+.inbox-item.run-blocked { border-left-color:var(--accent); } .inbox-item.run-failed { border-left-color:var(--red); }
 .inbox-item.run-cancelled { border-left-color:var(--muted); }
 .inbox-item .k { font-size:.68rem; text-transform:uppercase; color:var(--muted); }
 .inline-fix { min-height:26px; padding:.22em .65em; margin-left:.45rem; font-size:.74rem; }
@@ -442,6 +443,9 @@ const TRACKER_TRANSITIONS = {
 
 const $ = id => document.getElementById(id);
 const esc = s => { const d=document.createElement('span'); d.textContent=s??''; return d.innerHTML; };
+const attr = s => String(s??'')
+  .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+  .replace(/</g,'&lt;').replace(/>/g,'&gt;');
 async function api(path, opts){ const r = await fetch(path, Object.assign({cache:'no-store'}, opts)); return r.json(); }
 async function post(path, obj){ return api(path,{method:'POST',
   headers:{'Content-Type':'application/json'}, body:JSON.stringify(obj)}); }
@@ -849,11 +853,11 @@ function applicationJobLink(r){
   return jobLink(Object.assign({}, trackerJob(r), r));
 }
 function jsArg(s){
-  return esc(JSON.stringify(String(s||'')));
+  return attr(JSON.stringify(String(s||'')));
 }
 function applicationPathHint(r){
   const text = [r.next_action, r.notes].filter(Boolean).join(' ');
-  const m = text.match(/applications\/[^\s"',;()]+\/application-strategy\.md/);
+  const m = text.match(/applications\/[^\s"',;()]+\/(?:application-instructions|application-strategy)\.md/);
   return m ? m[0] : '';
 }
 function findApplicationArtifact(r){
@@ -1125,6 +1129,9 @@ function selectPrepArtifact(kind, path){
   prepState.selected[kind] = path;
   renderPrepPanel();
 }
+function selectPrepArtifactFromButton(btn){
+  selectPrepArtifact(btn.dataset.kind, btn.dataset.path);
+}
 function artifactLabel(a){
   return a.label || String(a.target||a.path||'artifact').replace(/[-_]/g,' ');
 }
@@ -1144,12 +1151,14 @@ function renderPrepPanel(){
       '<em>prep-linkedin</em> or <em>prep-interview</em> from the agent session panel</p>';
     return;
   }
-  const selectedPath = prepState.selected[kind] || items[0].path;
-  prepState.selected[kind] = selectedPath;
+  let selectedPath = prepState.selected[kind] || items[0].path;
   const active = items.find(a=>a.path===selectedPath) || items[0];
+  if (!items.some(a=>a.path===selectedPath)) selectedPath = active.path;
+  prepState.selected[kind] = active.path;
   const pickerClass = kind === 'interview' ? 'interview-picker' : 'prep-artifact-tabs';
   panel.innerHTML = `<div class="${pickerClass}">` + items.map(a=>
-    `<button class="${a.path===active.path?'on':''}" onclick="selectPrepArtifact(${jsArg(kind)},${jsArg(a.path)})">
+    `<button type="button" class="${a.path===active.path?'on':''}" data-kind="${attr(kind)}" data-path="${attr(a.path)}"
+      onclick="selectPrepArtifactFromButton(this)">
       ${esc(artifactLabel(a))}</button>`).join('') + `</div>
     <div id="prepArtifact"><p class="muted">loading…</p></div>`;
   loadPrepArtifact(active);
@@ -1182,7 +1191,8 @@ async function loadPrepArtifact(item){
 }
 function renderPrepArtifact(item, res, extras){
   if (res.error) return `<p class="muted">${esc(res.error)}</p>`;
-  const source = `<a class="source-link" href="#" onclick="previewFile(${jsArg(item.path)});return false">
+  const source = `<a class="source-link" href="#" data-path="${attr(item.path)}"
+    onclick="previewFile(this.dataset.path);return false">
     ${esc(item.path)}${res.truncated?' (truncated)':''}</a>`;
   if (item.kind === 'resume') return source + renderResumeArtifact(res.content, extras, item);
   if (item.kind === 'linkedin') return source + renderLinkedInArtifact(res.content);
