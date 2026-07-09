@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from location_normalize import normalize_job_rows
 from normalize_job_url import build as build_job_url
+from schema_defs import JOB_LIST_COLUMNS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +81,7 @@ def _extract_rows(payload) -> list[dict]:
 
 def _normalize_rows(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
+    allowed = set(JOB_LIST_COLUMNS)
     for row in rows:
         item = dict(row)
         source_url = str(item.get("source_url", "")).strip()
@@ -88,6 +90,7 @@ def _normalize_rows(rows: list[dict]) -> list[dict]:
                                  item.get("title", ""))
             item["source_url"] = info["canonical_url"]
             item.setdefault("job_id", info["job_id"])
+        item = {key: value for key, value in item.items() if key in allowed}
         normalized.append(item)
     return normalize_job_rows(normalized)
 

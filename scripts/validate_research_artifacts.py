@@ -42,11 +42,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+from job_url_policy import row_has_direct_posting_url, unverified_jd_placeholder
 import store_io
 
 from schema_defs import RESEARCH_DECISIONS as VALID_DECISIONS
 from schema_defs import RESEARCH_REASON_CODES as VALID_REASONS
 VALID_SOURCE_STATUS = {"planned", "ok", "blocked", "empty", "failed"}
+JD_TEXT_FIELDS = ("raw_text", "jd_text", "job_description", "description",
+                  "content", "body_text", "html")
+MIN_JD_TEXT_CHARS = 200
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -61,6 +65,21 @@ MIN_ARCHETYPE_PEERS_WARN = 2
 
 def norm(name: str) -> str:
     return "".join(c for c in name.lower() if c.isalnum())
+
+
+def _snapshot_has_jd_text(path: Path) -> bool:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    texts = []
+    for field in JD_TEXT_FIELDS:
+        value = data.get(field)
+        if isinstance(value, str):
+            texts.append(value)
+    return len(" ".join(texts).strip()) >= MIN_JD_TEXT_CHARS
 
 
 def _clean_yaml_scalar(value: str) -> str:
@@ -284,6 +303,31 @@ def main() -> int:
                               for run in runs))
     PLAN_TOKENS = ("pending", "follow-up", "follow up", "followup", "deferred",
                    "todo", "next run", "next pass", "not yet")
+    UNRESOLVED_CAPTURE_TOKENS = (
+        "outbound_dns_blocked",
+        "dns_error",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "nodename nor servname",
+        "connection timed out",
+        "network is unreachable",
+        "js shell",
+        "javascript shell",
+        "requires javascript",
+        "static html",
+        "browser unavailable",
+        "playwright unavailable",
+        "browser runtime unavailable",
+        "connector_error",
+        "approval_required",
+        "authwall",
+        "signed_out",
+        "verification_prompt",
+        "captcha",
+        "rate limit",
+        "429",
+        "403 forbidden",
+    )
 
     seen_companies = set()
     kept_companies = set()
@@ -305,15 +349,52 @@ def main() -> int:
                 fails.append(f"log candidate {i} ({c.get('company')}): failed_capture lists "
                              f"planned-not-attempted fallbacks {plans} — attempts only; an "
                              "interrupted ladder is decision 'pending_fallback', not failed_capture")
+            qtext = " ".join(
+                (str(q.get("scope", "")) + " " + str(q.get("q", "")) + " "
+                 + str(q.get("observed", "")) + " " + str(q.get("note", ""))).lower()
+                for q in queries
+                if norm(str(q.get("company", ""))) == norm(str(c.get("company", "")))
+            )
+            blocker_text = " ".join([
+                str(c.get("reason", "")),
+                str(c.get("reason_code", "")),
+                str(c.get("notes", "")),
+                " ".join(str(x) for x in fb),
+                qtext,
+            ]).lower()
+            blockers = [t for t in UNRESOLVED_CAPTURE_TOKENS if t in blocker_text]
+            if blockers:
+                fails.append(f"log candidate {i} ({c.get('company')}): failed_capture contains "
+                             f"unresolved capture/tooling blocker(s) {blockers[:4]} — finish "
+                             "the fallback ladder, use pending_fallback for interrupted work, "
+                             "or record a source-plan blocked/empty state with evidence")
         if c.get("decision") == "pending_fallback":
-            if not run_interrupted:
+            pending_text = " ".join([
+                str(c.get("reason", "")),
+                str(c.get("reason_code", "")),
+                str(c.get("notes", "")),
+                str(c.get("fallbacks_attempted", "")),
+            ]).lower()
+            unresolved_blocker = any(t in pending_text for t in UNRESOLVED_CAPTURE_TOKENS)
+            if not run_interrupted and not unresolved_blocker:
                 fails.append(f"log candidate {i} ({c.get('company')}): pending_fallback without an "
-                             "unresolved run interruption (LinkedIn handoff/blocked status) — "
+                             "unresolved run interruption or capture/tooling blocker — "
                              "finish the fallback ladder or record failed_capture with real attempts")
             if norm(c.get("company", "")) not in audit_text_early.replace(" ", ""):
                 warns.append(f"pending_fallback company '{c.get('company')}' not discussed in "
                              "coverage-audit follow-ups")
         if c.get("decision") == "kept":
+            if not row_has_direct_posting_url(c):
+                fails.append(f"log candidate {i} ({c.get('company')}/{c.get('title')}): "
+                             "kept candidate must include a direct posting URL in "
+                             "source_url or job_page_url; listing/search URLs belong in "
+                             "queries or pending_fallback, not job_list rows")
+            placeholder = unverified_jd_placeholder(c)
+            if placeholder:
+                fails.append(f"log candidate {i} ({c.get('company')}/{c.get('title')}): "
+                             f"kept candidate contains unverified JD placeholder "
+                             f"'{placeholder}' — record pending_fallback until the "
+                             "posting URL and JD are verified")
             jid = c.get("job_id", "")
             if not jid:
                 fails.append(f"log candidate {i} ({c.get('company')}): kept without job_id")
@@ -324,6 +405,11 @@ def main() -> int:
                 if not snapshot.exists():
                     fails.append(f"log candidate {i} ({c.get('company')}/{c.get('title')}): "
                                  f"missing JD snapshot targets/jobs/{jid}.json")
+                elif not _snapshot_has_jd_text(snapshot):
+                    fails.append(f"log candidate {i} ({c.get('company')}/{c.get('title')}): "
+                                 f"JD snapshot targets/jobs/{jid}.json lacks verified JD "
+                                 f"snapshot text (need one of {', '.join(JD_TEXT_FIELDS)} "
+                                 f"with >= {MIN_JD_TEXT_CHARS} characters)")
 
     # Self-hosted careers registry enforcement for declared seeds: if the
     # maintained registry says a seed's canonical source is self-hosted, final

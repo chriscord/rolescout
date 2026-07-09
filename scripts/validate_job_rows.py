@@ -5,8 +5,9 @@ Usage:
   python3 scripts/validate_job_rows.py rows.json [--existing data/job_list.csv]
 
 rows.json is a JSON list of dicts keyed by job_list column names.
-Checks: required fields, ISO dates, URL shape, enums, fit_score range,
-unknown columns, duplicate job_id within the batch and against --existing.
+Checks: required fields, ISO dates, direct posting URL presence, unverified
+JD placeholders, enums, fit_score range, unknown columns, duplicate job_id
+within the batch and against --existing.
 Prints a report; exit 0 if all rows pass, 1 otherwise.
 """
 import argparse
@@ -17,6 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from job_url_policy import row_has_direct_posting_url, unverified_jd_placeholder
 from location_normalize import normalize_location_value
 from schema_defs import (JOB_LIST_COLUMNS, REMOTE_POLICIES, POSTING_STATUSES,
                          PRIORITIES, ISO_DATE_RE)
@@ -40,6 +42,14 @@ def validate_row(row: dict, idx: int) -> list:
         v = str(row.get(f, "")).strip()
         if v and not re.match(r"^https?://", v):
             errs.append(f"row {idx}: {f}='{v}' is not an http(s) URL")
+    if not row_has_direct_posting_url(row):
+        errs.append(f"row {idx}: job row must include a direct posting URL in "
+                    "source_url or job_page_url; listing/search URLs are not enough")
+    placeholder = unverified_jd_placeholder(row)
+    if placeholder:
+        errs.append(f"row {idx}: unverified JD placeholder '{placeholder}' cannot be "
+                    "persisted as a job_list row; keep it as pending_fallback until "
+                    "the posting URL and JD are verified")
     loc = str(row.get("location", "")).strip()
     if loc:
         norm_loc = normalize_location_value(loc)

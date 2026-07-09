@@ -139,6 +139,58 @@ def _load_part(path: Path) -> dict:
     return {"queries": queries, "candidates": candidates}
 
 
+def _query_key(query: dict) -> tuple[str, str, str, str, str]:
+    return (
+        str(query.get("scope", "")).strip().lower(),
+        str(query.get("company", "")).strip().lower(),
+        str(query.get("attempt", "")).strip().lower(),
+        str(query.get("observed", "")).strip().lower(),
+        str(query.get("q", "")).strip().lower(),
+    )
+
+
+def _is_runner_owned_query(query: dict) -> bool:
+    scope = str(query.get("scope", "")).strip().lower()
+    return bool(query.get("runner_owned")) or scope == "linkedin jobs"
+
+
+def _is_runner_owned_candidate(candidate: dict) -> bool:
+    if candidate.get("runner_owned"):
+        return True
+    haystack = " ".join(
+        str(candidate.get(field, ""))
+        for field in ("source_url", "job_page_url", "url")
+    ).lower()
+    return "linkedin.com/jobs" in haystack or "linkedin.com/jobs/view" in haystack
+
+
+def _load_preserved_runner_entries(out_path: Path) -> tuple[list[dict], list[dict]]:
+    """Keep runner-owned observations when merge is rerun after probe/finalize.
+
+    Shard merge is allowed to replace shard-owned candidate logs, but it must not
+    erase observations appended by runner-owned helpers such as
+    probe_linkedin_jobs.py. The post-run validator may regenerate coverage after
+    finalize; preserving these entries keeps that later merge idempotent.
+    """
+    if not out_path.exists():
+        return [], []
+    try:
+        data = json.loads(out_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return [], []
+    if not isinstance(data, dict):
+        return [], []
+    queries = [
+        dict(q) for q in data.get("queries", [])
+        if isinstance(q, dict) and _is_runner_owned_query(q)
+    ]
+    candidates = [
+        dict(c) for c in data.get("candidates", [])
+        if isinstance(c, dict) and _is_runner_owned_candidate(c)
+    ]
+    return queries, candidates
+
+
 def merge_parts(project: Path, parts_dir: Path | None = None,
                 out_path: Path | None = None) -> dict:
     project = Path(project)
@@ -147,6 +199,7 @@ def merge_parts(project: Path, parts_dir: Path | None = None,
     if not parts_dir.is_dir():
         raise FileNotFoundError(f"research parts directory missing: {parts_dir}")
 
+    preserved_queries, preserved_candidates = _load_preserved_runner_entries(out_path)
     queries: list[dict] = []
     by_key: dict[str, dict] = {}
     part_names: list[str] = []
@@ -167,12 +220,28 @@ def merge_parts(project: Path, parts_dir: Path | None = None,
             else:
                 by_key[key] = dict(candidate)
 
+    for candidate in preserved_candidates:
+        key = _candidate_key(candidate)
+        if key in by_key:
+            by_key[key] = _merge_candidate(by_key[key], candidate)
+        else:
+            by_key[key] = dict(candidate)
+
+    query_keys = {_query_key(q) for q in queries}
+    for query in preserved_queries:
+        key = _query_key(query)
+        if key not in query_keys:
+            queries.append(query)
+            query_keys.add(key)
+
     if not part_names:
         details = "; ".join(f"{p['part']}: {p['error']}" for p in failed_parts[:5])
         raise ValueError("no valid research part files to merge"
                          + (f" ({details})" if details else ""))
     if failed_parts:
         warnings.append(f"{len(failed_parts)} research part file(s) failed to merge")
+    if preserved_queries or preserved_candidates:
+        warnings.append("preserved runner-owned research-log entries from previous pass")
 
     payload = {
         "schema": "research-log-v1",
