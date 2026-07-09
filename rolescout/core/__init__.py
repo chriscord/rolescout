@@ -29,10 +29,12 @@ SCRIPT_NAMES = [
     "validate_resume_tailoring", "grade_run", "qa_static", "upsert_rows",
     "init_db", "new_project", "ensure_recruiting_sheet",
     "capture_linkedin_profile", "resolve_company_sources",
+    "build_location_search_urls",
     "merge_research_parts", "persist_job_rows", "probe_linkedin_jobs",
     "location_eligibility", "validate_linkedin_review",
     "validate_interview_prep", "render_docx_gate",
-    "generate_coverage_audit", "validate_application_packets",
+    "generate_coverage_audit", "analyze_search_plan", "analyze_search_coverage",
+    "validate_application_packets",
 ]
 
 _loaded: dict[str, ModuleType] = {}

@@ -138,18 +138,38 @@ def _registered_sources(company: str, entry: dict) -> list[dict]:
     render = str(entry.get("render", "")).strip()
     source_kind = str(entry.get("source_kind", "")).strip()
     careers_url = str(entry.get("careers_search_url", "") or entry.get("listing_url", "")).strip()
+    location_template = str(entry.get("location_search_url_template", "")).strip()
+    keyword_location_template = str(entry.get("keyword_location_search_url_template", "")).strip()
+    location_param_name = str(entry.get("location_param_name", "")).strip()
+    location_value_style = str(entry.get("location_value_style", "")).strip()
+    location_multi_value = str(entry.get("location_multi_value", "")).strip()
+    location_examples = entry.get("location_examples", "")
     json_api = str(entry.get("json_api", "")).strip()
     posting_url = str(entry.get("posting_url", "") or entry.get("detail_prefix", "")
                       or entry.get("detail_pattern", "")).strip()
     raw_ats_url = str(entry.get("raw_ats_url", "")).strip()
     if careers_url:
-        sources.append({
+        source = {
             "type": "official_careers",
             "url": careers_url,
             "status": "planned",
             "render": render,
             "source_kind": source_kind,
-        })
+        }
+        if location_template:
+            source["location_search_url_template"] = location_template
+            source["note"] = "instantiate {country_or_city} from project target locations"
+        if keyword_location_template:
+            source["keyword_location_search_url_template"] = keyword_location_template
+        if location_param_name:
+            source["location_param_name"] = location_param_name
+        if location_value_style:
+            source["location_value_style"] = location_value_style
+        if location_multi_value:
+            source["location_multi_value"] = location_multi_value
+        if location_examples:
+            source["location_examples"] = location_examples
+        sources.append(source)
     if json_api:
         sources.append({
             "type": "official_careers_api",

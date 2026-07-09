@@ -166,6 +166,12 @@ ats_platforms:
 # hit the careers search endpoint (JSON API when one exists, else the server- or
 # JS-rendered listing), collect each posting's OWN official URL, then fetch that
 # URL and parse the JD there. verify_at_runtime — patterns/API paths drift.
+# Optional location hint fields are generic across companies:
+#   location_search_url_template: URL containing {location} or {country_or_city}
+#   location_param_name: query parameter repeated when multi-value mode requires it
+#   location_value_style: canonical_display_label | raw
+#   location_multi_value: repeat_param | comma | semicolon
+#   location_examples: examples only, not an exhaustive ruleset
 # ============================================================================
 self_hosted_careers:
   capture_contract: >
@@ -181,6 +187,11 @@ self_hosted_careers:
     - name: Google
       render: server_html            # server-rendered list + detail — NO browser needed (verified)
       careers_search_url: https://www.google.com/about/careers/applications/jobs/results/
+      location_search_url_template: https://www.google.com/about/careers/applications/jobs/results/?q=&location={country_or_city}&hl=en
+      location_param_name: location
+      location_value_style: canonical_display_label
+      location_multi_value: repeat_param
+      location_examples: [{'input': 'San Francisco', 'value': 'San Francisco, CA, USA'}, {'input': 'Seoul', 'value': 'Seoul, South Korea'}, {'input': 'Korea', 'value': 'Korea, Republic of'}]
       search_params: "?q=<keywords>&location=<city>"
       json_api: https://careers.google.com/api/v3/search/?q=<kw>&location=<city>   # optional; the results pages are authoritative
       posting_url: https://www.google.com/about/careers/applications/jobs/results/<id>-<slug>
@@ -260,6 +271,11 @@ major_company_careers:
       source_kind: self_hosted
       render: server_html
       careers_search_url: https://www.google.com/about/careers/applications/jobs/results/
+      location_search_url_template: https://www.google.com/about/careers/applications/jobs/results/?q=&location={country_or_city}&hl=en
+      location_param_name: location
+      location_value_style: canonical_display_label
+      location_multi_value: repeat_param
+      location_examples: [{'input': 'San Francisco', 'value': 'San Francisco, CA, USA'}, {'input': 'Seoul', 'value': 'Seoul, South Korea'}, {'input': 'Korea', 'value': 'Korea, Republic of'}]
       posting_url: https://www.google.com/about/careers/applications/jobs/results/<id>-<slug>
       evidence_url: https://www.google.com/about/careers/applications/jobs/results/
     - name: Meta
