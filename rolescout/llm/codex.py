@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shlex
 import shutil
 import subprocess
+import threading
+import time
 
 from ..paths import RoleScoutError, repo_root
 from . import model_profiles
@@ -232,7 +235,6 @@ class CodexProvider:
         env = {**os.environ, "RECRUITING_PROJECT_DIR": str(context["project"]),
                "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
-        import time
         t0 = time.monotonic()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.PIPE, text=True,
@@ -240,6 +242,20 @@ class CodexProvider:
         jsonl: list[dict] = []
         raw_lines: list[str] = []
         assert proc.stdout is not None
+        stdout_queue: queue.Queue[str | BaseException | None] = queue.Queue()
+
+        def read_stdout() -> None:
+            try:
+                assert proc.stdout is not None
+                for item in proc.stdout:
+                    stdout_queue.put(item)
+            except BaseException as exc:
+                stdout_queue.put(exc)
+            finally:
+                stdout_queue.put(None)
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
         try:
             if proc.stdin is not None:
                 try:
@@ -247,10 +263,20 @@ class CodexProvider:
                     proc.stdin.close()
                 except OSError:
                     pass
-            for line in proc.stdout:
-                if time.monotonic() - t0 > TIMEOUT_S:
+            while True:
+                elapsed = time.monotonic() - t0
+                if elapsed > TIMEOUT_S:
                     proc.kill()
                     raise RoleScoutError(f"codex exec exceeded CODEX_TIMEOUT_S={TIMEOUT_S}s")
+                try:
+                    item = stdout_queue.get(timeout=min(0.25, max(0.01, TIMEOUT_S - elapsed)))
+                except queue.Empty:
+                    continue
+                if item is None:
+                    break
+                if isinstance(item, BaseException):
+                    raise RoleScoutError(f"codex stdout read failed: {item}")
+                line = item
                 line = line.rstrip("\n")
                 if not line.strip():
                     continue

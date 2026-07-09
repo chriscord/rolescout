@@ -45,13 +45,16 @@ WORKFLOW_SKILLS = {
     "apply": ["application-strategy", "application-tracker"],
 }
 WORKFLOW_PHASE_SKILLS = {
+    ("search", "plan_repair"): ["job-opening-research"],
     ("search", "capture_shard"): ["job-opening-research"],
+    ("search", "capture_repair"): ["job-opening-research"],
 }
 
 # workflows whose scope is the user's focused positions (data/focused-jobs.json)
 FOCUS_SCOPED = {"prep", "prep-strategy", "prep-resume", "prep-linkedin",
                 "prep-interview"}
 PROFILE_WORKFLOW = "profile-intake"
+DEFAULT_SEARCH_RETRY_COMPANY_LIMIT = 8
 
 
 def focused_jobs(project: Path) -> list[dict]:
@@ -221,6 +224,198 @@ def _shard_generated_name(companies: list[dict]) -> str:
     return "-".join(n for n in names if n) or "capture"
 
 
+def _read_json(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _company_aliases(name: str) -> list[str]:
+    """Conservative aliases for matching run-level task text to known companies."""
+    raw = str(name or "").strip()
+    if not raw:
+        return []
+    aliases = [raw]
+    aliases.extend(part.strip() for part in re.split(r"[;/|]", raw) if part.strip())
+    paren = re.findall(r"\(([^)]+)\)", raw)
+    for group in paren:
+        aliases.extend(part.strip() for part in re.split(r"[/|;]", group) if part.strip())
+    cleaned = re.sub(r"\s*\([^)]*\)", "", raw).strip()
+    if cleaned and cleaned != raw:
+        aliases.append(cleaned)
+    out, seen = [], set()
+    for alias in aliases:
+        alias = re.sub(r"\s+", " ", alias).strip()
+        if len(alias) < 3:
+            continue
+        key = alias.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(alias)
+    return out
+
+
+def _known_company_names(project: Path) -> list[str]:
+    names: list[str] = []
+    for rel in ("targets/source-plan.json", "targets/company-universe.json"):
+        data = _read_json(project / rel, {})
+        if rel.endswith("source-plan.json"):
+            for company in data.get("companies", []) if isinstance(data, dict) else []:
+                if isinstance(company, dict) and company.get("name"):
+                    names.append(str(company["name"]))
+        else:
+            for bucket in data.get("buckets", []) if isinstance(data, dict) else []:
+                for company in bucket.get("companies", []) if isinstance(bucket, dict) else []:
+                    if isinstance(company, dict) and company.get("name"):
+                        names.append(str(company["name"]))
+    meta = _read_json(project / "project-meta.json", {})
+    for value in meta.get("target_companies", []) if isinstance(meta, dict) else []:
+        for part in re.split(r"[;,]", str(value)):
+            part = part.strip()
+            if part:
+                names.append(part)
+    try:
+        registry = core.resolve_company_sources.load_registered_registry()
+        for entry in registry.values():
+            if entry.get("name"):
+                names.append(str(entry["name"]))
+    except Exception:
+        pass
+    out, seen = [], set()
+    for name in names:
+        key = _slug(name, "")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def _mentions_company(task: str, alias: str) -> bool:
+    pattern = r"(?<![A-Za-z0-9])" + re.escape(alias) + r"(?![A-Za-z0-9])"
+    return re.search(pattern, task, flags=re.I) is not None
+
+
+def _looks_like_company_token(token: str) -> bool:
+    token = token.strip(" \t\r\n\"'`()[]{}.,:;")
+    if not token:
+        return False
+    suffixes = {"ai", "co", "corp", "corporation", "inc", "llc", "ltd", "plc"}
+    if token.lower().rstrip(".") in suffixes:
+        return True
+    return bool(re.search(r"[A-Z0-9]", token))
+
+
+def _extract_inline_company_mentions(task: str) -> list[str]:
+    """Fallback for one-off run prompts that name a company not in our registry.
+
+    Known-company matching remains primary. This intentionally only handles
+    explicit preposition phrases such as "from CompanyX" or "at Acme AI" so
+    ordinary title text is not mistaken for a company.
+    """
+    task = str(task or "")
+    stopwords = {
+        "and", "or", "with", "without", "for", "from", "at", "in", "near",
+        "role", "roles", "job", "jobs", "position", "positions", "opening",
+        "openings", "team", "teams", "title", "titles", "senior", "manager",
+        "director", "principal", "strategy", "product",
+    }
+    out: list[str] = []
+    patterns = [
+        r"\b(?:from|at|within|inside)\s+([A-Za-z0-9][A-Za-z0-9&.+'\-]*(?:\s+[A-Za-z0-9][A-Za-z0-9&.+'\-]*){0,4})",
+        r"\b(?:company|companies)\s+[\"'`]([^\"'`]+)[\"'`]",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, task):
+            raw = re.split(r"[\n{}:;,]", match.group(1).strip(), maxsplit=1)[0]
+            tokens: list[str] = []
+            for token in raw.split():
+                clean = token.strip(" \t\r\n\"'`()[]{}.,:;")
+                if not clean or clean.lower() in stopwords:
+                    break
+                if not _looks_like_company_token(clean):
+                    break
+                tokens.append(clean)
+            if tokens:
+                out.append(" ".join(tokens))
+    deduped, seen = [], set()
+    for name in out:
+        key = _slug(name, "")
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(name)
+    return deduped
+
+
+def _extract_requested_companies(project: Path, task: str) -> list[str]:
+    task = str(task or "")
+    if not task.strip():
+        return []
+    matches: list[tuple[int, str]] = []
+    for name in _known_company_names(project):
+        aliases = _company_aliases(name)
+        if any(_mentions_company(task, alias) for alias in aliases):
+            # Prefer the most specific known company name when aliases overlap.
+            matches.append((len(name), name))
+    out, seen = [], set()
+    for _, name in sorted(matches, key=lambda item: item[0], reverse=True):
+        key = _slug(name, "")
+        if key not in seen:
+            seen.add(key)
+            out.append(name)
+    for name in _extract_inline_company_mentions(task):
+        key = _slug(name, "")
+        if key and key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
+
+
+def _extract_requested_titles(task: str) -> list[str]:
+    titles: list[str] = []
+    for group in re.findall(r"\{([^}]+)\}", str(task or ""), flags=re.S):
+        for item in re.split(r"[;\n]", group):
+            item = re.sub(r"\s+", " ", item).strip(" -")
+            if item:
+                titles.append(item)
+    out, seen = [], set()
+    for title in titles:
+        key = title.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(title)
+    return out
+
+
+def _build_run_intent(project: Path, workflow: str, task: str | None) -> dict:
+    """Parse a free-text run instruction into lightweight, auditable hints.
+
+    This never edits project targets. It only lets one run bias or narrow work
+    while preserving project hard constraints such as location and negatives.
+    """
+    task_text = str(task or "").strip()
+    companies = _extract_requested_companies(project, task_text)
+    titles = _extract_requested_titles(task_text)
+    targeted_language = bool(re.search(
+        r"\b(include|collect|find|refresh|more|only|from|at|for)\b",
+        task_text, flags=re.I))
+    mode = "targeted_incremental" if (companies or titles or targeted_language) else "default"
+    return {
+        "schema": "rolescout-run-intent-v1",
+        "workflow": workflow,
+        "mode": mode,
+        "raw_instruction": task_text,
+        "requested_companies": companies,
+        "requested_titles": titles,
+        "hard_scope_companies": bool(companies),
+        "notes": (
+            "Run-level instruction biases this run only; project target locations, "
+            "negatives, truthfulness, local-only, and approval boundaries still apply."
+            if task_text else ""
+        ),
+    }
+
+
 def _agent_log_dir(ctx: RunContext) -> Path | None:
     if not ctx.run_id:
         return None
@@ -376,6 +571,219 @@ def execute_events(ctx: RunContext, events: list[dict]) -> None:
             ctx.emit("info", f"(ignored unknown event type: {t})")
 
 
+def _search_gate_text(report: dict) -> str:
+    lines = [
+        f"{str(report.get('status', 'unknown')).upper()}: "
+        f"companies={report.get('companies', 0)} "
+        f"candidates={report.get('candidates_logged', 0)} "
+        f"kept={report.get('kept', 0)} "
+        f"failed_capture={report.get('failed_capture', 0)} "
+        f"linkedin_queries={report.get('linkedin_queries', 0)}"
+    ]
+    for item in report.get("blocking", []):
+        lines.append(f"  BLOCKED: {item}")
+    for item in report.get("issues", []):
+        lines.append(f"  PARTIAL: {item}")
+    retry = report.get("retry_companies", [])
+    if retry:
+        lines.append("  RETRY: " + ", ".join(str(x) for x in retry[:12]))
+    return "\n".join(lines)
+
+
+def _run_search_coverage_gate(ctx: RunContext, label: str,
+                              mark: bool = True) -> tuple[int, dict | None]:
+    """Run deterministic coverage analysis and reflect partial/blocked status."""
+    result = core.run_script("analyze_search_coverage", str(ctx.project),
+                             "--json", env=_env_for(ctx.project))
+    raw = (result.stdout + result.stderr).strip()
+    report = None
+    out = raw[:800]
+    try:
+        report = json.loads(result.stdout)
+        out = _search_gate_text(report)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    ctx.validator_results.append({
+        "validator": f"analyze_search_coverage[{label}]",
+        "target": ctx.project.name,
+        "returncode": result.returncode,
+        "output": out[:800],
+    })
+    status_label = (
+        "PASS" if result.returncode == 0 else
+        "PARTIAL" if result.returncode == 2 else
+        "BLOCKED" if result.returncode == 3 else
+        "FAIL"
+    )
+    ctx.emit("validator", f"analyze_search_coverage[{label}]: {status_label}")
+    if mark and result.returncode == 2:
+        ctx.mark_partial("search_coverage", out[:800])
+        ctx.emit("validator", out[:800])
+    elif mark and result.returncode == 3:
+        ctx.mark_blocked("search_coverage", out[:800])
+        ctx.emit("validator", out[:800])
+    elif result.returncode not in (0, 2, 3):
+        ctx.failure_class = ctx.failure_class or "search_coverage_analysis_failure"
+        ctx.emit("validator", out[:800])
+    return result.returncode, report
+
+
+def _plan_gate_text(report: dict) -> str:
+    lines = [
+        f"{str(report.get('status', 'unknown')).upper()}: "
+        f"companies={report.get('companies', 0)} "
+        f"source_plan_companies={report.get('source_plan_companies', 0)} "
+        f"declared_seeds={len(report.get('declared_seeds', []))}"
+    ]
+    for item in report.get("issues", []):
+        lines.append(f"  PARTIAL: {item}")
+    return "\n".join(lines)
+
+
+def _run_search_plan_gate(ctx: RunContext, label: str,
+                          mark: bool = True) -> tuple[int, dict | None]:
+    result = core.run_script("analyze_search_plan", str(ctx.project), "--json",
+                             env=_env_for(ctx.project))
+    raw = (result.stdout + result.stderr).strip()
+    report = None
+    out = raw[:800]
+    try:
+        report = json.loads(result.stdout)
+        out = _plan_gate_text(report)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    ctx.validator_results.append({
+        "validator": f"analyze_search_plan[{label}]",
+        "target": ctx.project.name,
+        "returncode": result.returncode,
+        "output": out[:800],
+    })
+    status_label = (
+        "PASS" if result.returncode == 0 else
+        "PARTIAL" if result.returncode == 2 else
+        "FAIL"
+    )
+    ctx.emit("validator", f"analyze_search_plan[{label}]: {status_label}")
+    if mark and result.returncode == 2:
+        ctx.mark_partial("search_plan", out[:800])
+        ctx.emit("validator", out[:800])
+    elif result.returncode not in (0, 2):
+        ctx.failure_class = ctx.failure_class or "search_plan_analysis_failure"
+        ctx.emit("validator", out[:800])
+    return result.returncode, report
+
+
+def _note_merge_status(ctx: RunContext) -> None:
+    try:
+        merged_log = json.loads((ctx.project / "targets" / "research-log.json")
+                                .read_text(encoding="utf-8-sig"))
+        if merged_log.get("merge_status") == "partial":
+            failed = merged_log.get("failed_parts", [])
+            ctx.mark_partial("merge_research_parts",
+                             f"merged valid shard parts but skipped {len(failed)} invalid part(s)")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _run_search_merge(ctx: RunContext, label: str) -> bool:
+    merge = core.run_script("merge_research_parts", str(ctx.project),
+                            env=_env_for(ctx.project))
+    merge_out = (merge.stdout + merge.stderr).strip()
+    ctx.validator_results.append({
+        "validator": f"merge_research_parts{label}",
+        "target": ctx.project.name,
+        "returncode": merge.returncode,
+        "output": merge_out[:800],
+    })
+    ctx.emit("validator", f"merge_research_parts{label}: "
+             f"{'PASS' if merge.returncode == 0 else 'FAIL'}")
+    if merge.returncode != 0:
+        ctx.emit("validator", merge_out[:800])
+        return False
+    _note_merge_status(ctx)
+    return True
+
+
+def _run_search_coverage_scaffold(ctx: RunContext, label: str) -> bool:
+    coverage = core.run_script("generate_coverage_audit", str(ctx.project),
+                               env=_env_for(ctx.project))
+    coverage_out = (coverage.stdout + coverage.stderr).strip()
+    ctx.validator_results.append({
+        "validator": f"generate_coverage_audit{label}",
+        "target": ctx.project.name,
+        "returncode": coverage.returncode,
+        "output": coverage_out[:800],
+    })
+    ctx.emit("validator", f"generate_coverage_audit{label}: "
+             f"{'PASS' if coverage.returncode == 0 else 'FAIL'}")
+    if coverage.returncode != 0:
+        ctx.emit("validator", coverage_out[:800])
+        return False
+    return True
+
+
+def _research_log_kept_count(log_path: Path) -> int:
+    try:
+        data = json.loads(log_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    return sum(
+        1 for candidate in data.get("candidates", [])
+        if isinstance(candidate, dict) and candidate.get("decision") == "kept"
+    )
+
+
+def _salvage_search_results(ctx: RunContext, reason: str) -> bool:
+    """Merge/persist valid captured search rows without asking an LLM to finalize.
+
+    Used when a search is interrupted or a retry lane fails after earlier capture
+    produced valid part files. Persistence still goes through persist_job_rows.py,
+    which validates and upserts by job_id instead of replacing tables.
+    """
+    ctx.mark_partial("search_salvage", reason)
+    parts_dir = ctx.project / "targets" / "research-log.parts"
+    log_path = ctx.project / "targets" / "research-log.json"
+    if parts_dir.is_dir() and any(parts_dir.glob("*.json")):
+        if not _run_search_merge(ctx, "[salvage]") and not log_path.exists():
+            ctx.failure_class = ctx.failure_class or "search_salvage_merge_failure"
+            return False
+    elif not log_path.exists():
+        ctx.failure_class = ctx.failure_class or "search_salvage_no_research_log"
+        ctx.emit("validator", "search salvage: no research-log parts or merged log to persist")
+        return False
+
+    _run_search_coverage_scaffold(ctx, "[salvage]")
+    kept_count = _research_log_kept_count(log_path)
+    if kept_count == 0:
+        ctx.mark_partial("search_salvage_empty",
+                         "No kept job candidates were available to persist.")
+        return False
+
+    persist = core.run_script("persist_job_rows", str(log_path),
+                              "--project", str(ctx.project),
+                              env=_env_for(ctx.project))
+    persist_out = (persist.stdout + persist.stderr).strip()
+    ctx.validator_results.append({
+        "validator": "persist_job_rows[salvage]",
+        "target": str(log_path),
+        "returncode": persist.returncode,
+        "output": persist_out[:800],
+    })
+    ctx.emit("store", "persist_job_rows[salvage]: "
+             f"{'OK' if persist.returncode == 0 else 'REFUSED'}")
+    if persist.returncode != 0:
+        ctx.mark_partial("search_salvage_persist", persist_out[:800])
+        ctx.emit("store", persist_out[:800])
+        return False
+    ctx.summary = ctx.summary or (
+        f"Search interrupted or retry-limited; saved {kept_count} captured job row(s) "
+        "with validated upsert."
+    )
+    return True
+
+
 def _post_run_checks(ctx: RunContext) -> None:
     """Workflow-level validation after the agent has written artifacts directly."""
     if ctx.workflow == PROFILE_WORKFLOW and ctx.mode == "live":
@@ -457,6 +865,9 @@ def _post_run_checks(ctx: RunContext) -> None:
     if coverage.returncode != 0:
         ctx.failure_class = ctx.failure_class or "coverage_audit_generation_failure"
         ctx.emit("validator", cov_out[:800])
+        return
+    gate_rc, _ = _run_search_coverage_gate(ctx, "post-run")
+    if gate_rc not in (0, 2, 3):
         return
     artifacts = core.run_script("validate_research_artifacts", str(ctx.project),
                                 env=_env_for(ctx.project))
@@ -647,7 +1058,8 @@ def _is_linkedin_source(source: dict) -> bool:
     return "linkedin" in text.lower()
 
 
-def _search_capture_shards(project: Path, max_shards: int = 6) -> list[dict]:
+def _search_capture_shards(project: Path, max_shards: int = 6,
+                           run_intent: dict | None = None) -> list[dict]:
     """Build deterministic non-LinkedIn capture shards from source-plan.json."""
     source_plan = project / "targets" / "source-plan.json"
     try:
@@ -667,17 +1079,22 @@ def _search_capture_shards(project: Path, max_shards: int = 6) -> list[dict]:
         item["sources"] = sources
         if item.get("name") and sources:
             filtered.append(item)
+    requested = {
+        _slug(name, "") for name in (run_intent or {}).get("requested_companies", [])
+        if _slug(name, "")
+    }
+    if requested:
+        filtered = [
+            company for company in filtered
+            if _slug(company.get("name", ""), "") in requested
+        ]
     if not filtered:
         return []
 
-    count = len(filtered)
-    if count > 15:
-        shard_count = min(max_shards, max(3, (count + 5) // 6))
-    else:
-        shard_count = 1
-    shards = [{"companies": []} for _ in range(shard_count)]
-    for idx, company in enumerate(filtered):
-        shards[idx % shard_count]["companies"].append(company)
+    # Isolate companies so one source blocker (for example a DNS-blocked Google
+    # careers API) cannot cause the agent to abandon other companies in the same
+    # shard. _run_parallel_named_subagents caps concurrent workers separately.
+    shards = [{"companies": [company]} for company in filtered]
     for idx, shard in enumerate(shards, start=1):
         label = _agent_label("search", idx, _shard_generated_name(shard["companies"]))
         shard["id"] = label
@@ -685,8 +1102,67 @@ def _search_capture_shards(project: Path, max_shards: int = 6) -> list[dict]:
     return [shard for shard in shards if shard["companies"]]
 
 
+def _search_repair_shards(project: Path, retry_companies: list[str]) -> list[dict]:
+    source_plan = project / "targets" / "source-plan.json"
+    try:
+        data = json.loads(source_plan.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    companies = data.get("companies", []) if isinstance(data, dict) else []
+    by_norm = {
+        _slug(company.get("name", ""), ""): company
+        for company in companies if isinstance(company, dict) and company.get("name")
+    }
+    shards: list[dict] = []
+    seen: set[str] = set()
+    for name in retry_companies:
+        key = _slug(name, "")
+        if not key or key in seen or key not in by_norm:
+            continue
+        seen.add(key)
+        company = dict(by_norm[key])
+        company["sources"] = [
+            src for src in company.get("sources", [])
+            if isinstance(src, dict) and not _is_linkedin_source(src)
+        ]
+        if not company["sources"]:
+            continue
+        idx = len(shards) + 1
+        label = _agent_label("search-retry", idx, _shard_generated_name([company]))
+        shards.append({
+            "id": label,
+            "companies": [company],
+            "part_path": f"targets/research-log.parts/{label}.json",
+        })
+    return shards
+
+
+def _bounded_retry_companies(retry_companies: list[str]) -> list[str]:
+    try:
+        limit = int(os.environ.get("ROLESCOUT_SEARCH_MAX_RETRY_COMPANIES",
+                                   str(DEFAULT_SEARCH_RETRY_COMPANY_LIMIT)) or
+                    DEFAULT_SEARCH_RETRY_COMPANY_LIMIT)
+    except ValueError:
+        limit = DEFAULT_SEARCH_RETRY_COMPANY_LIMIT
+    if limit <= 0:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in retry_companies:
+        clean = str(name or "").strip()
+        key = _slug(clean, "")
+        if not clean or not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
-                                  on_stream) -> dict:
+                                  on_stream, *,
+                                  hard_fail_when_all_fail: bool = True) -> dict:
     if not jobs:
         return {"events": [], "usage": {}}
     if len(jobs) == 1:
@@ -695,6 +1171,8 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
             return _execute_subagent(ctx, provider, job["workflow"], job["context"],
                                      on_stream, label=job["label"],
                                      model_workflow=job.get("model_workflow"))
+        except RunCancelled:
+            raise
         except Exception as e:
             ctx.mark_partial(job["label"], str(e))
             _append_agent_log(ctx, job["label"], f"ERROR: {e}")
@@ -704,9 +1182,9 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
                 "status": "failed", "error": str(e)[:1000],
             }])
             ctx.emit("info", f"subagent failed: {job['label']}: {str(e)[:300]}")
-            if _looks_blocked_error(str(e)):
+            if hard_fail_when_all_fail and _looks_blocked_error(str(e)):
                 ctx.mark_blocked(job["label"], str(e))
-            else:
+            elif hard_fail_when_all_fail:
                 ctx.failure_class = ctx.failure_class or "named_subagent_failed"
             return {"events": [], "usage": {}, "failed_labels": [job["label"]]}
 
@@ -715,10 +1193,10 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
     failures: dict[str, str] = {}
     records: list[dict] = []
     try:
-        max_workers = int(os.environ.get("ROLESCOUT_SEARCH_MAX_PARALLEL", "0") or "0")
+        max_workers = int(os.environ.get("ROLESCOUT_SEARCH_MAX_PARALLEL", "6") or "6")
     except ValueError:
-        max_workers = 0
-    workers = max(1, min(len(jobs), max_workers or len(jobs)))
+        max_workers = 6
+    workers = max(1, min(len(jobs), max_workers))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
@@ -739,6 +1217,8 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
                 records.append({"label": label, "workflow": job["workflow"],
                                 "model_workflow": job.get("model_workflow", ""),
                                 "status": "ok"})
+            except RunCancelled:
+                raise
             except Exception as e:
                 failures[label] = str(e)
                 records.append({"label": label, "workflow": job["workflow"],
@@ -749,7 +1229,7 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
                 ctx.emit("info", f"subagent failed: {label}: {str(e)[:300]}")
     _write_agent_manifest(ctx, records)
     merged: dict = {"events": [], "usage": {}, "failed_labels": sorted(failures)}
-    if failures and not results:
+    if hard_fail_when_all_fail and failures and not results:
         reason = "; ".join(f"{label}: {msg}" for label, msg in failures.items())
         if all(_looks_blocked_error(msg) for msg in failures.values()):
             ctx.mark_blocked("all_named_subagents", reason)
@@ -768,7 +1248,8 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
 
 
 def _run_search_orchestration(ctx: RunContext, provider, context_for,
-                              stale_material: str, on_stream) -> dict:
+                              stale_material: str, on_stream,
+                              run_intent: dict | None = None) -> dict:
     """Runner-owned search lane: plan, shard capture, merge, probe, finalize."""
     envelope: dict = {"events": [], "usage": {}}
     lead = _execute_subagent(
@@ -780,7 +1261,32 @@ def _run_search_orchestration(ctx: RunContext, provider, context_for,
     if ctx.failure_class or ctx.blocked_reasons:
         return envelope
 
-    shards = _search_capture_shards(ctx.project)
+    targeted = bool((run_intent or {}).get("requested_companies"))
+    if targeted:
+        ctx.emit("info", "targeted incremental search: limiting capture to "
+                 + ", ".join((run_intent or {}).get("requested_companies", [])))
+        plan_rc, plan_report = 0, None
+    else:
+        plan_rc, plan_report = _run_search_plan_gate(ctx, "post-plan", mark=False)
+    if plan_rc == 2:
+        repair = _execute_subagent(
+            ctx, provider, "search",
+            context_for("search", stale_material, {
+                "search_phase": "plan_repair",
+                "search_plan_gate": _plan_gate_text(plan_report or {}),
+            }),
+            on_stream, label=_agent_label("search", 1, "plan-repair"),
+            model_workflow="search-plan")
+        _merge_usage(envelope, repair)
+        if ctx.failure_class or ctx.blocked_reasons:
+            return envelope
+        plan_rc, _ = _run_search_plan_gate(ctx, "post-plan-repair", mark=True)
+    elif plan_rc != 0:
+        return envelope
+    if plan_rc not in (0, 2):
+        return envelope
+
+    shards = _search_capture_shards(ctx.project, run_intent=run_intent)
     if not shards:
         ctx.emit("info", "search source-plan missing or empty after lead phase; "
                  "falling back to one legacy search subagent")
@@ -819,32 +1325,15 @@ def _run_search_orchestration(ctx: RunContext, provider, context_for,
     captured = _run_parallel_named_subagents(ctx, provider, jobs, on_stream)
     _merge_usage(envelope, captured)
     if ctx.failure_class or ctx.blocked_reasons:
+        _salvage_search_results(
+            ctx,
+            "Search capture ended before normal finalize; saving valid captured parts.",
+        )
         return envelope
 
-    merge = core.run_script("merge_research_parts", str(ctx.project),
-                            env=_env_for(ctx.project))
-    merge_out = (merge.stdout + merge.stderr).strip()
-    ctx.validator_results.append({
-        "validator": "merge_research_parts",
-        "target": ctx.project.name,
-        "returncode": merge.returncode,
-        "output": merge_out[:800],
-    })
-    ctx.emit("validator", f"merge_research_parts: "
-             f"{'PASS' if merge.returncode == 0 else 'FAIL'}")
-    if merge.returncode != 0:
+    if not _run_search_merge(ctx, ""):
         ctx.failure_class = ctx.failure_class or "search_merge_failure"
-        ctx.emit("validator", merge_out[:800])
         return envelope
-    try:
-        merged_log = json.loads((ctx.project / "targets" / "research-log.json")
-                                .read_text(encoding="utf-8"))
-        if merged_log.get("merge_status") == "partial":
-            failed = merged_log.get("failed_parts", [])
-            ctx.mark_partial("merge_research_parts",
-                             f"merged valid shard parts but skipped {len(failed)} invalid part(s)")
-    except (OSError, json.JSONDecodeError):
-        pass
 
     probe = core.run_script("probe_linkedin_jobs", str(ctx.project),
                             env=_env_for(ctx.project))
@@ -862,20 +1351,82 @@ def _run_search_orchestration(ctx: RunContext, provider, context_for,
                          f"probe returned {probe.returncode}")
         ctx.emit("validator", probe_out[:800])
 
-    coverage = core.run_script("generate_coverage_audit", str(ctx.project),
-                               env=_env_for(ctx.project))
-    coverage_out = (coverage.stdout + coverage.stderr).strip()
-    ctx.validator_results.append({
-        "validator": "generate_coverage_audit",
-        "target": ctx.project.name,
-        "returncode": coverage.returncode,
-        "output": coverage_out[:800],
-    })
-    ctx.emit("validator", "generate_coverage_audit: "
-             f"{'PASS' if coverage.returncode == 0 else 'FAIL'}")
-    if coverage.returncode != 0:
+    if not _run_search_coverage_scaffold(ctx, ""):
         ctx.failure_class = ctx.failure_class or "coverage_audit_generation_failure"
-        ctx.emit("validator", coverage_out[:800])
+        return envelope
+    gate_rc, gate_report = _run_search_coverage_gate(ctx, "pre-finalize", mark=False)
+    if gate_rc == 2:
+        raw_retry_companies = [
+            str(name) for name in (gate_report or {}).get("retry_companies", [])
+            if str(name).strip()
+        ]
+        retry_companies = _bounded_retry_companies(raw_retry_companies)
+        if len(retry_companies) < len(raw_retry_companies):
+            ctx.mark_partial(
+                "search_retry_capped",
+                "Automatic retry limited to "
+                f"{len(retry_companies)} of {len(raw_retry_companies)} companies. "
+                "Remaining gaps are reported for an explicit follow-up run.",
+            )
+        repair_shards = _search_repair_shards(ctx.project, retry_companies)
+        if repair_shards:
+            for stale_part in parts_dir.glob("search-retry-*.json"):
+                try:
+                    stale_part.unlink()
+                except OSError:
+                    pass
+            ctx.emit("info", "search coverage partial; retrying unresolved companies: "
+                     + ", ".join(retry_companies[:8]))
+            repair_jobs = []
+            for shard in repair_shards:
+                repair_jobs.append({
+                    "label": shard["id"],
+                    "workflow": "search",
+                    "model_workflow": "search-capture-shard",
+                    "context": context_for("search", stale_material, {
+                        "search_phase": "capture_repair",
+                        "search_shard": shard,
+                        "search_part_path": shard["part_path"],
+                        "search_coverage_gate": _search_gate_text(gate_report or {}),
+                    }),
+                })
+            repaired = _run_parallel_named_subagents(
+                ctx, provider, repair_jobs, on_stream,
+                hard_fail_when_all_fail=False)
+            _merge_usage(envelope, repaired)
+            if repaired.get("failed_labels"):
+                ctx.mark_partial(
+                    "search_retry_failed",
+                    "Retry subagent(s) failed: "
+                    + ", ".join(str(label) for label in repaired["failed_labels"][:8])
+                    + ". Saving valid rows captured before/around retry.",
+                )
+            if ctx.failure_class or ctx.blocked_reasons:
+                _salvage_search_results(
+                    ctx,
+                    "Search retry ended before normal finalize; saving valid captured parts.",
+                )
+                return envelope
+            if not _run_search_merge(ctx, "[repair]"):
+                ctx.failure_class = ctx.failure_class or "search_merge_failure"
+                return envelope
+            if not _run_search_coverage_scaffold(ctx, "[repair]"):
+                ctx.failure_class = ctx.failure_class or "coverage_audit_generation_failure"
+                return envelope
+            gate_rc, gate_report = _run_search_coverage_gate(ctx, "post-repair", mark=True)
+        else:
+            gate_rc, gate_report = _run_search_coverage_gate(ctx, "pre-finalize", mark=True)
+    if gate_rc == 3:
+        _salvage_search_results(
+            ctx,
+            "Search coverage remained blocked; saving valid captured rows before exit.",
+        )
+        return envelope
+    if gate_rc not in (0, 2):
+        _salvage_search_results(
+            ctx,
+            "Search coverage analysis did not complete; saving valid captured rows before exit.",
+        )
         return envelope
 
     final = _execute_subagent(
@@ -888,6 +1439,23 @@ def _run_search_orchestration(ctx: RunContext, provider, context_for,
         on_stream, label=_agent_label("search", 1, "finalize"),
         model_workflow="search-finalize")
     _merge_usage(envelope, final)
+    if not ctx.failure_class and not ctx.blocked_reasons:
+        coverage = core.run_script("generate_coverage_audit", str(ctx.project),
+                                   env=_env_for(ctx.project))
+        coverage_out = (coverage.stdout + coverage.stderr).strip()
+        ctx.validator_results.append({
+            "validator": "generate_coverage_audit[post-finalize]",
+            "target": ctx.project.name,
+            "returncode": coverage.returncode,
+            "output": coverage_out[:800],
+        })
+        ctx.emit("validator", "generate_coverage_audit[post-finalize]: "
+                 f"{'PASS' if coverage.returncode == 0 else 'FAIL'}")
+        if coverage.returncode != 0:
+            ctx.failure_class = ctx.failure_class or "coverage_audit_generation_failure"
+            ctx.emit("validator", coverage_out[:800])
+        else:
+            _run_search_coverage_gate(ctx, "post-finalize")
     return envelope
 
 
@@ -1207,6 +1775,7 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
     from . import preflight as _pf
     pdir = _pf.profile_dir(project)
     linkedin_source = pdir / "linkedin-current.md" if pdir else None
+    run_intent = _build_run_intent(project, workflow, task)
 
     def _on_stream(text: str) -> None:
         ctx.check_cancelled()  # providers stream through here — kills the agent call
@@ -1227,6 +1796,7 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
             "linkedin_source_path": str(linkedin_source) if linkedin_source else "",
             "targets": project_meta.targets_text(project),
             "instructions": profile_meta.instructions(pdir),
+            "run_intent": run_intent,
         }
         if extra:
             payload.update(extra)
@@ -1260,7 +1830,7 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
         elif workflow == "search":
             envelope = _run_search_orchestration(
                 ctx, provider, _provider_context, stale_material,
-                _on_stream)
+                _on_stream, run_intent=run_intent)
         else:
             if workflow == "prep-interview":
                 _build_interview_context(ctx)
@@ -1268,7 +1838,11 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
                 ctx, provider, workflow,
                 _provider_context(workflow, stale_material), _on_stream)
         if workflow == "search" and not ctx.failure_class and not ctx.blocked_reasons:
-            ctx.emit("info", "search complete; running score once")
+            if ctx.partial_reasons:
+                ctx.emit("info", "search finished with partial coverage; "
+                         "running score once for captured rows")
+            else:
+                ctx.emit("info", "search complete; running score once")
             score_envelope = _execute_subagent(
                 ctx, provider, "score",
                 _provider_context("score", stale_material), _on_stream)
@@ -1282,8 +1856,16 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
         if mode != "mock" and not ctx.blocked_reasons:
             _post_run_checks(ctx)
     except RunCancelled:
+        saved = False
+        if workflow == "search":
+            saved = _salvage_search_results(
+                ctx,
+                "Run cancelled by user; saving job rows captured before the stop.",
+            )
         ctx.failure_class = "cancelled"
-        if not ctx.summary:
+        if saved:
+            ctx.summary = "Run cancelled by user; saved captured job rows collected so far."
+        elif not ctx.summary:
             ctx.summary = "Run cancelled by user."
         ctx.emit("info", "run cancelled — the agent was stopped")
     except Exception as e:
