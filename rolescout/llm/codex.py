@@ -320,8 +320,9 @@ class CodexProvider:
                 events.append({"type": "external_action", "action": "agent_requested",
                                "target": text[len("APPROVAL_REQUIRED:"):].strip()[:300],
                                "content": text, "on_approve": [], "on_deny": []})
-        events.append({"type": "result",
-                       "summary": (texts[-1] if texts else "")[:2000]})
+        final_text = texts[-1] if texts else ""
+        result = {"type": "result", "summary": final_text[:2000], "content": final_text}
+        events.append(result)
         return {"workflow": workflow,
                 "model_config": self.model_config(workflow, profile),
                 "streamed": True,  # progress already shown live; don't re-print

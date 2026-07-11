@@ -1,0 +1,36 @@
+{
+  "workflow": "story-bank",
+  "model_config": {"provider": "mock", "model": "canned-envelope-v2"},
+  "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "num_turns": 0},
+  "events": [
+    {
+      "type": "artifact",
+      "path": "interviews/story-bank.json",
+      "json": {
+        "meta": {
+          "generated_at": "mock",
+          "source": "synthetic mock fixture"
+        },
+        "entries": [
+          {
+            "id": "ST-01",
+            "title": "Mock story",
+            "source": "mock resume bullet",
+            "situation": "A mock situation needed a concise example.",
+            "task": "Create a reusable story-bank entry.",
+            "action": "Drafted a bounded STAR entry from fixture data.",
+            "result": "The story-bank validator has a complete entry shape.",
+            "best_for": "mock interview prep",
+            "ev_refs": ["EV-MOCK"]
+          }
+        ]
+      }
+    },
+    {
+      "type": "artifact",
+      "path": "interviews/story-bank.md",
+      "text": "# Story Bank\n\n| ID | Title | Source | S | T | A | R | Best for | EV refs |\n|---|---|---|---|---|---|---|---|---|\n| ST-01 | Mock story | mock resume bullet | A mock situation needed a concise example. | Create a reusable story-bank entry. | Drafted a bounded STAR entry from fixture data. | The story-bank validator has a complete entry shape. | mock interview prep | EV-MOCK |\n"
+    },
+    {"type": "result", "summary": "mock story-bank completed with synthetic output."}
+  ]
+}

@@ -11,6 +11,15 @@ import json
 
 from ..paths import repo_root
 
+RUNNER_ARTIFACT_WORKFLOWS = {
+    "prep-strategy",
+    "prep-resume",
+    "prep-linkedin",
+    "prep-interview",
+    "story-bank",
+    "apply",
+}
+
 RUN_CONTRACT = """
 HEADLESS RUN CONTRACT (rolescout CLI):
 - Work ONLY on the search project at: {project}
@@ -23,6 +32,46 @@ HEADLESS RUN CONTRACT (rolescout CLI):
   share sensitive data. If the task appears to require one, produce local
   instructions or tracker notes only.
 - Task focus: {task}
+"""
+
+STAGED_PREP_INTERVIEW_SKILL = """
+# Prep Interview Stage Contract
+
+Use only the injected runner packet. Do not read files, write files, run shell
+commands, or run validators. Return exactly one
+`ROLESCOUT_ARTIFACT_OUTPUT_JSON` payload with the requested stage artifact path.
+
+Truthfulness: do not invent employers, dates, metrics, interview reports, news,
+or company facts. Use web research only for current company context, interview
+patterns, glossary, and recent news; cite every URL in `## Sources`.
+
+Stage outputs:
+- `company-research`: markdown with exactly `## Glossary`, `## News`,
+  `## Sources`. Use tables only. News should be recent and source-dated.
+- `whys`: markdown with exactly `## The Whys`. Include Why this industry,
+  company, position, and you; V1/V2/V3 rows for each. Industry means the
+  company/product market and customer/user system, not the role function.
+- `qa`: markdown with exactly `## Self Introduction`, `## Job Requirements`,
+  `## Adversarial Questions`, `## Behavioral Questions`, `## Questions to Ask`.
+  Use tables only and map requirements/questions to story IDs where relevant.
+"""
+
+STORY_BANK_SKILL = """
+# Story Bank Contract
+
+Build only the reusable interview story bank from the injected baseline resume,
+candidate profile, evidence map, and existing story bank. Do not read files, run
+shell commands, run validators, or generate per-role interview packs.
+
+Return exactly one `ROLESCOUT_ARTIFACT_OUTPUT_JSON` payload containing:
+- `interviews/story-bank.json`
+- `interviews/story-bank.md`
+
+Truthfulness: one entry per real resume bullet or merged CAR/STAR bullet group.
+Each entry needs stable `id`, `title`, `source`, `situation`, `task`, `action`,
+`result`, `best_for`, and `ev_refs`. Keep existing story IDs stable when the
+existing story bank is present. Do not invent employers, dates, metrics, or
+outcomes; tag uncertain inference as `[inferred - confirm]`.
 """
 
 PROFILE_RUN_CONTRACT = """
@@ -43,9 +92,14 @@ HEADLESS PROFILE-INTAKE CONTRACT (rolescout CLI):
 def workflow_prompt(workflow: str, context: dict) -> str:
     root = repo_root()
     skills = context.get("skills", [])
-    skill_text = "\n\n".join(
-        (root / ".agents" / "skills" / s / "SKILL.md").read_text(encoding="utf-8")
-        for s in skills if (root / ".agents" / "skills" / s / "SKILL.md").exists())
+    if workflow == "prep-interview" and context.get("interview_stage"):
+        skill_text = STAGED_PREP_INTERVIEW_SKILL
+    elif workflow == "story-bank":
+        skill_text = STORY_BANK_SKILL
+    else:
+        skill_text = "\n\n".join(
+            (root / ".agents" / "skills" / s / "SKILL.md").read_text(encoding="utf-8")
+            for s in skills if (root / ".agents" / "skills" / s / "SKILL.md").exists())
     extras = ""
     if context.get("linkedin_url"):
         extras += (f"\n- Candidate's LinkedIn profile URL: {context['linkedin_url']}"
@@ -77,6 +131,89 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "```json\n"
                    f"{json.dumps(context['run_intent'], indent=2, ensure_ascii=False)}\n"
                    "```")
+    if workflow == "prep-interview" and context.get("interview_role_packet"):
+        packet = context["interview_role_packet"]
+        scoped_packet = context.get("runner_context_packet") or packet
+        stage = context.get("interview_stage") or "full"
+        extras += ("\n\n## HARD ROLE SCOPE - SINGLE POSITION ONLY\n"
+                   "- This is a single-role interview packet run. Generate exactly "
+                   "one artifact for the role/stage below.\n"
+                   f"- Required artifact path: `{packet.get('expected_artifact', '')}`.\n"
+                   "- Any other `interviews/.../prep-notes.md` path is invalid and "
+                   "will be discarded by the runner.\n"
+                   f"- Stage: `{stage}`. Generate only the sections required for this stage; "
+                   "the runner assembles the final `prep-notes.md`.\n"
+                   "- Do not choose another focused role from memory, prior runs, "
+                   "strategy files, examples, or broader context. If any context "
+                   "mentions other roles, ignore them as targets.\n"
+                   "```json\n"
+                   f"{json.dumps(scoped_packet, indent=2, ensure_ascii=False)}\n"
+                   "```\n")
+    if workflow == "prep-resume" and context.get("resume_group_packet"):
+        packet = context["resume_group_packet"]
+        scoped_packet = context.get("runner_context_packet") or packet
+        extras += ("\n\n## HARD GROUP SCOPE - SINGLE RESUME GROUP ONLY\n"
+                   "- This is a single-group resume packet run. Generate artifacts only "
+                   "for the group below.\n"
+                   f"- Required group: `{packet.get('group_slug', '')}`.\n"
+                   "- Required artifact paths are listed in `expected_artifacts`; any "
+                   "other resume group path is invalid and will be discarded by the runner.\n"
+                   "- Use only the processed JD briefs and group files in this packet. "
+                   "Do not infer requirements from stale groups or other focused roles.\n"
+                   "```json\n"
+                   f"{json.dumps(scoped_packet, indent=2, ensure_ascii=False)}\n"
+                   "```\n")
+    if workflow == "prep-linkedin" and context.get("linkedin_group_packet"):
+        packet = context["linkedin_group_packet"]
+        scoped_packet = context.get("runner_context_packet") or packet
+        extras += ("\n\n## HARD GROUP SCOPE - SINGLE LINKEDIN GROUP ONLY\n"
+                   "- This is a single-group LinkedIn review packet run. Generate exactly "
+                   "one review artifact for the group below.\n"
+                   f"- Required group: `{packet.get('group_slug', '')}`.\n"
+                   f"- Required artifact path: `{scoped_packet.get('expected_artifact', '')}`.\n"
+                   "- Any other `linkedin/.../linkedin-review.md` path is invalid and "
+                   "will be discarded by the runner.\n"
+                   "- Use the injected current LinkedIn content as the only current "
+                   "LinkedIn source, and use only this group's processed JD briefs and "
+                   "group context for positioning.\n"
+                   "```json\n"
+                   f"{json.dumps(scoped_packet, indent=2, ensure_ascii=False)}\n"
+                   "```\n")
+    if workflow in RUNNER_ARTIFACT_WORKFLOWS:
+        packet = context.get("runner_context_packet")
+        extras += ("\n\n## Runner-owned artifact boundary\n"
+                   "- Do not write files, create directories, update SQLite/CSV, run "
+                   "validators, run `upsert_rows.py`, or execute shell/Python commands "
+                   "for local file I/O. The RoleScout runner owns all filesystem writes, "
+                   "store writes, validation, and retry/repair mechanics. This boundary "
+                   "overrides any skill text that says to write files or run validators "
+                   "inside the agent.\n"
+                   "- Use the injected runner context packet below as the input. Do not "
+                   "read project files yourself. If the packet is insufficient for a "
+                   "truthfulness-critical field, label the gap in the output rather than "
+                   "performing file I/O or failing the workflow.\n"
+                   "- Finish with exactly one machine-readable payload prefixed by "
+                   "`ROLESCOUT_ARTIFACT_OUTPUT_JSON:`. Schema:\n"
+                   "```json\n"
+                   "{\"schema\":\"rolescout-artifact-output-v1\","
+                   "\"artifacts\":[{\"path\":\"relative/path.md\",\"text\":\"...\"}],"
+                   "\"store_writes\":[{\"store\":\"tracker\",\"rows\":[...]}],"
+                   "\"notes\":[\"optional short note\"]}\n"
+                   "```\n"
+                   "- `path` is project-relative and must use forward slashes. Use "
+                   "`artifacts` for markdown/json/text outputs. Use `store_writes` only "
+                   "for validated `tracker` or `job_list` row candidates; the runner "
+                   "will perform the actual upsert.\n")
+        scoped_inline = (
+            (workflow == "prep-interview" and context.get("interview_stage"))
+            or (workflow == "prep-resume" and context.get("resume_group_packet"))
+            or (workflow == "prep-linkedin" and context.get("linkedin_group_packet"))
+        )
+        if packet and not scoped_inline:
+            extras += ("\n## Injected runner context packet\n"
+                       "```json\n"
+                       f"{json.dumps(packet, indent=2, ensure_ascii=False)}\n"
+                       "```\n")
     if context.get("profile_ready") is False:
         extras += ("\n\n## Candidate profile status\n"
                    "- candidate-profile.md is not available yet.\n"
@@ -378,7 +515,9 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "surface has been captured.\n"
                    "- Fresh LinkedIn capture has already been completed by the runner "
                    "before this agent prompt. Do not perform capture again.\n"
-                   f"- Read the fresh handoff file: `{context.get('linkedin_source_path') or 'profiles/<person>/linkedin-current.md'}`.\n"
+                   "- In runner-owned artifact mode, use the injected "
+                   "`linkedin_current_md` packet as the fresh handoff content; do not "
+                   "read the handoff file yourself.\n"
                    "- Treat that file as the only current LinkedIn source for analysis, "
                    "scoring, and group-specific suggestions.\n"
                    "- Do not run browser automation, do not open LinkedIn, do not run "
@@ -389,19 +528,154 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "runner capture`.\n"
                    "- Never type credentials, save LinkedIn edits, post, upload, message, "
                    "or continue with a local-evidence proxy review.")
+        extras += ("\n\n## LinkedIn review runner-render contract\n"
+                   "- Return each `linkedin/<group>/linkedin-review.md` as an artifact "
+                   "in `ROLESCOUT_ARTIFACT_OUTPUT_JSON`; do not write it yourself.\n"
+                   "- Do not compare the LinkedIn display name with the resume/profile "
+                   "name. Do not mention display-name differences or LinkedIn account "
+                   "verification UI in scorecard gaps, discrepancies, priorities, or "
+                   "logs. Remove LinkedIn UI clutter from current-section excerpts.\n"
+                   "- The markdown must pass `scripts/validate_linkedin_review.py`. "
+                   "Part 2 headings must be exactly: `### Headline`, `### About`, "
+                   "`### Experience entries`, `### Skills`, `### Education`, and "
+                   "`### Activity`. Do not shorten `Experience entries` to "
+                   "`Experience`.\n"
+                   "- Part 1 score table values must include `/5` exactly, e.g. "
+                   "`2/5`, not bare `2`; the validator only counts rows with that "
+                   "shape.\n"
+                   "- Every Part 2 section must include both `**Current**` and one of "
+                   "`**Add**`, `**Proposed**`, or `**Change**`.")
+
+    if workflow == "prep-strategy":
+        extras += ("\n\n## Strategy runner-render contract\n"
+                   "- Return strategy artifacts in `ROLESCOUT_ARTIFACT_OUTPUT_JSON`; "
+                   "do not write files, run shell commands, or run validators yourself.\n"
+                   "- Include `strategy/prep-strategy.md`, "
+                   "`strategy/target-priorities.md`, and one "
+                   "`targets/job-groups/<group>.md` artifact for every active focused "
+                   "group. If grouping assignments need to be written back, include "
+                   "runner-owned `store_writes` for `job_list`; the runner performs "
+                   "the actual upsert.\n"
+                   "- Scope remains focused positions only. Do not widen to the whole "
+                   "job list and do not leave stale focused positions in the strategy "
+                   "document.\n")
+
+    if workflow == "prep-resume":
+        extras += ("\n\n## Resume runner-render contract\n"
+                   "- Return resume artifacts in `ROLESCOUT_ARTIFACT_OUTPUT_JSON`; do "
+                   "not write files or run validators yourself.\n"
+                   "- For every active generated group, include at least "
+                   "`resumes/<group>/target-brief.json`, "
+                   "`resumes/<group>/resume-score.md`, "
+                   "`resumes/<group>/resume-draft.md`, "
+                   "`resumes/<group>/reasons.json`, and "
+                   "`resumes/<group>/resume-validation.md`. If a group is parked, "
+                   "return `resumes/<group>/resume-not-generated.md` with the blocker.\n"
+                   "- `resume-draft.md` must use normal markdown headings and `- ` "
+                   "experience bullets. `reasons.json` must map each bullet to evidence "
+                   "and requirement/source job IDs so the runner can validate it.\n")
+
+    if workflow == "prep-interview":
+        extras += ("\n\n## Interview runner-render contract\n"
+                   "- Return interview artifacts in `ROLESCOUT_ARTIFACT_OUTPUT_JSON`; do "
+                   "not write files or run validators yourself.\n"
+                   "- Do not generate or rewrite `interviews/story-bank.json` here. "
+                   "Story-bank generation is owned by the separate `story-bank` workflow; "
+                   "use the injected story bank as reference only.\n"
+                   "- This run is role-scoped when the runner supplies "
+                   "`interview_role_packet`; generate exactly one "
+                   "`interviews/<company>-<role>/prep-notes.md` artifact for that role.\n"
+                   "- The artifact path must exactly equal "
+                   "`interview_role_packet.expected_artifact`; do not pluralize, "
+                   "rename, shorten, or substitute another company/role.\n"
+                   "- In staged mode, generate only the requested stage artifact. "
+                   "`company-research` includes exactly `## Glossary`, `## News`, "
+                   "and `## Sources`; `whys` includes exactly `## The Whys`; `qa` "
+                   "includes exactly `## Self Introduction`, `## Job Requirements`, "
+                   "`## Adversarial Questions`, `## Behavioral Questions`, and "
+                   "`## Questions to Ask`.\n"
+                   "- Each `prep-notes.md` must use exactly "
+                   "these H2 headings, in order: `## Self Introduction`, "
+                   "`## Job Requirements`, `## Adversarial Questions`, `## The Whys`, "
+                   "`## Behavioral Questions`, `## Glossary`, `## News`, "
+                   "`## Questions to Ask`, `## Sources`.\n"
+                   "- Every required H2 section must contain a markdown table. The Whys "
+                   "table must include Why this industry/company/position/you with "
+                   "V1, V2, and V3 rows.\n")
+
+    if workflow == "story-bank":
+        extras += ("\n\n## Story-bank runner-render contract\n"
+                   "- Generate only `interviews/story-bank.json` and "
+                   "`interviews/story-bank.md` in `ROLESCOUT_ARTIFACT_OUTPUT_JSON`.\n"
+                   "- Do not generate per-role `prep-notes.md` files in this workflow.\n"
+                   "- `story-bank.json` must contain `entries`, and each story entry must "
+                   "include id, title, source, situation, task, action, result, best_for, "
+                   "and ev_refs. Keep story IDs stable when an existing story bank is "
+                   "present in the injected packet.\n")
 
     if workflow == "score":
-        extras += ("\n\n## Score runs (grouping + scoring only)\n"
-                   "- This is NOT a discovery run: do not build a company universe or "
-                   "search for new openings. Work the existing job_list.\n"
-                   "- ENRICH-THEN-SCORE: rows missing jd_summary/must_have_requirements "
-                   "(e.g. manually added URL-only rows) must be enriched FIRST - fetch "
-                   "each row's posting URL, capture JD fields, snapshot to targets/jobs/, "
-                   "upsert - then group and score. Scoring a row with no JD content is "
-                   "fabrication.\n"
-                   "- Order: focused positions first (data/focused-jobs.json), then the "
-                   "rest of the list. Dead URLs: mark posting_status per what you "
-                   "observe and score only on available evidence, flagging the gap.")
+        if context.get("score_batch"):
+            batch = context["score_batch"]
+            extras += ("\n\n## Score batch evaluator mode (no tools, no file I/O)\n"
+                       "- You are evaluating one compact batch prepared by the RoleScout "
+                       "runner. Do not read CSV/SQLite/files, do not run shell commands, "
+                       "do not browse, and do not write artifacts. The runner owns all "
+                       "I/O, merging, score math, validation, and upsert.\n"
+                       "- Evaluate ONLY the jobs in the JSON batch below. Return exactly "
+                       "one final machine-readable JSON object prefixed with "
+                       "`SCORE_BATCH_OUTPUT_JSON:`.\n"
+                       "- Schema: `{\"schema\":\"rolescout-score-batch-output-v1\","
+                       "\"batch_index\":N,\"job_ratings\":[...]}`.\n"
+                       "- Return one `job_ratings` entry for every input job. Each entry "
+                       "must include `job_id`, `job_group`, `ratings`, `rationale`, and "
+                       "`reason`.\n"
+                       "- Keep output compact to prevent truncation: no markdown, no prose "
+                       "outside the JSON, `reason` must be <= 180 characters, each "
+                       "`rationale` value must be <= 80 characters, and `job_group` must "
+                       "be a short slug-like label <= 40 characters.\n"
+                       "- `ratings` must include every criterion name from `criteria`, "
+                       "with integer values 1-5. Use low ratings and `job_group:\"parked\"` "
+                       "for out-of-target, non-posting, insufficient-evidence, stale, "
+                       "or location/seniority mismatch rows; never leave a row unrated.\n"
+                       "- Use only the compact fields provided. If JD evidence is thin, "
+                       "say so in `reason` and rate conservatively rather than inventing "
+                       "missing facts. Candidate profile/evidence, when available, is "
+                       "included inside the batch JSON by the runner; do not read it "
+                       "from disk yourself.\n"
+                       "```json\n"
+                       f"{json.dumps(batch, indent=2, ensure_ascii=False)}\n"
+                       "```\n")
+        else:
+            extras += ("\n\n## Score runs (grouping + scoring only)\n"
+                       "- This is NOT a discovery run: do not build a company universe or "
+                       "search for new openings.\n"
+                       "- Scope: work the UI-visible jobs from "
+                       "`data/job_list.visible.csv` when it exists; otherwise use "
+                       "`data/job_list.csv`. Do not treat raw capture-store rows excluded "
+                       "from the visible view as required score scope.\n"
+                       "- Runtime boundary: write/update qualitative score artifacts only: "
+                       "`strategy/job-ratings.json`, `targets/job-groups/*.md`, and "
+                       "`strategy/target-priorities.md`. Do NOT run "
+                       "`scripts/score_jobs.py`, `scripts/validate_job_rows.py`, "
+                       "`scripts/upsert_rows.py`, or create `data/score-updates.json`; "
+                       "the RoleScout runner performs deterministic score math, validation, "
+                       "job_list upsert, and visible-view rebuild after you finish.\n"
+                       "- Sandbox fallback: if file writes or shell commands are blocked "
+                       "or the workspace appears read-only, do not stop as failed. Return "
+                       "a final machine-readable JSON object prefixed with "
+                       "`SCORE_OUTPUT_JSON:` using schema `rolescout-score-output-v1`: "
+                       "`{\"schema\":\"rolescout-score-output-v1\","
+                       "\"job_ratings\":[...],\"job_groups\":[{\"slug\":\"...\","
+                       "\"markdown\":\"...\"}],\"target_priorities_md\":\"...\"}`. "
+                       "The runner will materialize those artifacts and finalize scoring.\n"
+                       "- ENRICH-THEN-SCORE: rows missing jd_summary/must_have_requirements "
+                       "(e.g. manually added URL-only rows) need JD evidence before scoring. "
+                       "If you cannot enrich them within the artifact-only boundary, leave "
+                       "them unrated and explain the gap; scoring a row with no JD content is "
+                       "fabrication.\n"
+                       "- Order: focused positions first (data/focused-jobs.json), then the "
+                       "rest of the list. Dead URLs: mark posting_status per what you "
+                       "observe and score only on available evidence, flagging the gap.")
 
     if workflow == "prep-interview":
         extras += ("\n\n## Prep-interview industry thesis contract\n"
@@ -419,11 +693,10 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                    "position` must each use at least one position-specific signal "
                    "from web research, JD context, glossary/news, or official "
                    "company/product context.\n"
-                   "- Run `python scripts/validate_interview_prep.py <project>`. "
-                   "If it returns `QUALITY`, retry The Whys from the industry "
-                   "thesis instead of deleting or withholding the artifacts. If a "
-                   "bounded retry still leaves quality issues, keep the artifacts "
-                   "and report the remaining scope as partial.")
+                   "- The runner validates the generated files after materializing "
+                   "them. If the runner supplies `prep_interview_quality_retry`, "
+                   "revise the flagged The Whys rows from the industry thesis "
+                   "instead of deleting or withholding valid artifacts.")
         if context.get("prep_interview_quality_retry"):
             extras += ("\n\n## Prep-interview quality retry\n"
                        "The previous prep-interview validator returned retryable "
@@ -433,6 +706,11 @@ def workflow_prompt(workflow: str, context: dict) -> str:
                        "```text\n"
                        f"{context['prep_interview_quality_retry']}\n"
                        "```")
+        if context.get("prep_interview_artifact_retry"):
+            extras += ("\n\n## Prep-interview artifact path retry\n"
+                       f"{context['prep_interview_artifact_retry']}\n"
+                       "The runner will discard any artifact whose path does not "
+                       "exactly match the required artifact path.\n")
 
     if workflow == "search":
         extras += ("\n\n## Job sources (search runs)\n"

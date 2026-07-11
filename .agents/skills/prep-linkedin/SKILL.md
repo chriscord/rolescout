@@ -31,7 +31,7 @@ If the fresh handoff file is missing, empty, or clearly not LinkedIn profile tex
 
 For focused prep, do not use a bare LinkedIn URL as a substitute for current content. If current content is missing, ask the user to complete the supported LinkedIn import/capture path first.
 
-A name mismatch between the resume/profile materials and the captured LinkedIn page is a warning and open question, not a hard gate. It must not hard fail the run by itself. Continue analysis from the captured current source when the LinkedIn source URL and visible profile text are valid, and record the mismatch in `## Discrepancies` / Open Questions so the user can confirm identity or update materials. Hard fail only when the handoff is missing, empty, not a LinkedIn profile surface, or clearly the wrong URL class.
+Do not compare or validate the displayed LinkedIn name against the resume/profile name. People commonly use different legal, preferred, English, local-language, or professional names. Continue analysis from the captured current source when the LinkedIn source URL and visible profile text are valid. Hard fail only when the handoff is missing, empty, not a LinkedIn profile surface, or clearly the wrong URL class.
 
 Never type credentials, never change LinkedIn fields, never save edits, never message, and never continue with a "local evidence proxy" review.
 

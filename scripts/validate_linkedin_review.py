@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import re
 import sys
 from pathlib import Path
@@ -32,13 +34,45 @@ def _key(value: str) -> str:
     return "".join(ch for ch in value.lower() if ch.isalnum())
 
 
+def _slug(value: str, fallback: str = "group") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    return (slug[:48].strip("-") or fallback)
+
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _focused_groups(project: Path) -> list[str]:
+    focus_path = project / "data" / "focused-jobs.json"
+    csv_path = project / "data" / "job_list.csv"
+    try:
+        ids = json.loads(focus_path.read_text(encoding="utf-8-sig")).get("job_ids", [])
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    wanted = {str(job_id) for job_id in ids if str(job_id or "").strip()}
+    if not wanted or not csv_path.exists():
+        return []
+    groups: list[str] = []
+    seen: set[str] = set()
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("job_id") not in wanted:
+                continue
+            slug = _slug(row.get("job_group", ""), "")
+            if slug and slug not in seen:
+                seen.add(slug)
+                groups.append(slug)
+    return groups
 
 
 def _review_files(target: Path) -> list[Path]:
     if target.is_file():
         return [target]
+    if (target / "linkedin").exists():
+        groups = _focused_groups(target)
+        if groups:
+            return [target / "linkedin" / group / "linkedin-review.md" for group in groups]
     linkedin_dir = target / "linkedin"
     if target.name == "linkedin":
         linkedin_dir = target

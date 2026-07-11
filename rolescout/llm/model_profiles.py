@@ -11,7 +11,7 @@ from typing import Any
 from ..paths import RoleScoutError, home_dir
 
 CONFIG_FILE = "model-profiles.json"
-CURRENT_VERSION = 4
+CURRENT_VERSION = 5
 ALLOWED_CODEX_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 FALLBACK_PROFILES: dict[str, Any] = {
@@ -21,12 +21,6 @@ FALLBACK_PROFILES: dict[str, Any] = {
         "workflows": {
             "profile-intake": {"model": "gpt-5.5", "effort": "high"},
             "search": {"model": "gpt-5.5", "effort": "medium"},
-            "search-plan": {"model": "gpt-5.5", "effort": "medium",
-                            "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
-            "search-capture-shard": {"model": "gpt-5.4", "effort": "medium",
-                                     "fallbacks": [{"model": "gpt-5.3-codex-spark", "effort": "high"}]},
-            "search-finalize": {"model": "gpt-5.5", "effort": "medium",
-                                "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
             "score": {"model": "gpt-5.5", "effort": "medium",
                       "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
             "prep": {"model": "gpt-5.5", "effort": "high"},
@@ -34,6 +28,7 @@ FALLBACK_PROFILES: dict[str, Any] = {
             "prep-resume": {"model": "gpt-5.5", "effort": "high"},
             "prep-linkedin": {"model": "gpt-5.5", "effort": "high"},
             "prep-interview": {"model": "gpt-5.5", "effort": "high"},
+            "story-bank": {"model": "gpt-5.5", "effort": "high"},
             "apply": {"model": "gpt-5.5", "effort": "medium"},
             "complete": {"model": "gpt-5.5", "effort": "medium"},
         },
@@ -43,12 +38,6 @@ FALLBACK_PROFILES: dict[str, Any] = {
         "workflows": {
             "profile-intake": {"model": "gpt-5.5", "effort": "high"},
             "search": {"model": "gpt-5.5", "effort": "medium"},
-            "search-plan": {"model": "gpt-5.5", "effort": "medium",
-                            "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
-            "search-capture-shard": {"model": "gpt-5.4", "effort": "medium",
-                                     "fallbacks": [{"model": "gpt-5.3-codex-spark", "effort": "high"}]},
-            "search-finalize": {"model": "gpt-5.5", "effort": "medium",
-                                "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
             "score": {"model": "gpt-5.5", "effort": "medium",
                       "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]},
             "prep": {"model": "gpt-5.5", "effort": "high"},
@@ -56,6 +45,7 @@ FALLBACK_PROFILES: dict[str, Any] = {
             "prep-resume": {"model": "gpt-5.5", "effort": "high"},
             "prep-linkedin": {"model": "gpt-5.5", "effort": "high"},
             "prep-interview": {"model": "gpt-5.5", "effort": "high"},
+            "story-bank": {"model": "gpt-5.5", "effort": "high"},
             "apply": {"model": "gpt-5.5", "effort": "medium"},
             "complete": {"model": "gpt-5.5", "effort": "medium"},
         },
@@ -120,12 +110,6 @@ def _migrate_known_defaults(custom: dict[str, Any]) -> tuple[dict[str, Any], boo
         if isinstance(prep_strategy, dict) and prep_strategy.get("effort") == "high":
             prep_strategy["effort"] = "xhigh"
         workflows.setdefault("profile-intake", {"model": "gpt-5.5", "effort": "high"})
-        workflows.setdefault("search-plan", {"model": "gpt-5.5", "effort": "medium",
-                                             "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]})
-        workflows.setdefault("search-capture-shard", {"model": "gpt-5.4", "effort": "medium",
-                                                      "fallbacks": [{"model": "gpt-5.3-codex-spark", "effort": "high"}]})
-        workflows.setdefault("search-finalize", {"model": "gpt-5.5", "effort": "medium",
-                                                 "fallbacks": [{"model": "gpt-5.4", "effort": "high"}]})
     migrated["version"] = CURRENT_VERSION
     return migrated, migrated != custom
 

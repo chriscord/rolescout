@@ -16,6 +16,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from jd_text_cleaner import clean_jd_text
+
 
 def _configure_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
@@ -82,7 +84,7 @@ def _business_arm(title: str) -> str:
 def _compact(value, limit: int = 700) -> str:
     if isinstance(value, list):
         value = "; ".join(str(v) for v in value)
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", clean_jd_text(str(value or ""))).strip()
     return text[:limit]
 
 

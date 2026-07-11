@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="run a workflow headlessly")
     p.add_argument("workflow", choices=["profile-intake", "search", "score", "prep",
                                         "prep-strategy", "prep-resume", "prep-linkedin",
-                                        "prep-interview", "apply"])
+                                        "prep-interview", "story-bank", "apply"])
     p.add_argument("--project", help="project code (default: active project)")
     p.add_argument("--person", help="person code for profile-intake")
     p.add_argument("--task", help="free-text task focus passed to the workflow")
@@ -65,9 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--llm-name",
                    help="display name for --provider cli telemetry, e.g. glm or opencode")
     p.add_argument("--llm-model",
-                   help="model label for --provider cli templates and telemetry")
+                   help="model label for --provider cli templates and telemetry "
+                        "(search discovery is deterministic unless legacy search is enabled)")
     p.add_argument("--llm-effort",
-                   help="effort label for --provider cli templates and telemetry")
+                   help="effort label for --provider cli templates and telemetry "
+                        "(search discovery is deterministic unless legacy search is enabled)")
     p.add_argument("--max-turns", type=int, default=40)
 
     p = sub.add_parser("web", help="local web UI: run workflows and watch live progress")

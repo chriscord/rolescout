@@ -186,8 +186,9 @@ class ExternalCliProvider:
                                "content": text,
                                "on_approve": [],
                                "on_deny": []})
-        events.append({"type": "result",
-                       "summary": (raw_lines[-1] if raw_lines else "")[:2000]})
+        final_text = raw_lines[-1] if raw_lines else ""
+        result = {"type": "result", "summary": final_text[:2000], "content": final_text}
+        events.append(result)
         return {"workflow": workflow,
                 "model_config": self.model_config(profile_key),
                 "streamed": True,

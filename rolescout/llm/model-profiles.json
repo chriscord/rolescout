@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "_notes": {
     "purpose": "RoleScout pins Codex model and reasoning effort per workflow instead of inheriting the user's Codex CLI defaults.",
     "edit": "Change this file after it is copied to ~/.rolescout/model-profiles.json, or set ROLESCOUT_MODEL_PROFILES to another JSON file.",
@@ -19,36 +19,6 @@
       "search": {
         "model": "gpt-5.5",
         "effort": "medium"
-      },
-      "search-plan": {
-        "model": "gpt-5.5",
-        "effort": "medium",
-        "fallbacks": [
-          {
-            "model": "gpt-5.4",
-            "effort": "high"
-          }
-        ]
-      },
-      "search-capture-shard": {
-        "model": "gpt-5.4",
-        "effort": "medium",
-        "fallbacks": [
-          {
-            "model": "gpt-5.3-codex-spark",
-            "effort": "high"
-          }
-        ]
-      },
-      "search-finalize": {
-        "model": "gpt-5.5",
-        "effort": "medium",
-        "fallbacks": [
-          {
-            "model": "gpt-5.4",
-            "effort": "high"
-          }
-        ]
       },
       "score": {
         "model": "gpt-5.5",
@@ -77,6 +47,10 @@
         "effort": "high"
       },
       "prep-interview": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "story-bank": {
         "model": "gpt-5.5",
         "effort": "high"
       },
@@ -104,36 +78,6 @@
         "model": "gpt-5.5",
         "effort": "medium"
       },
-      "search-plan": {
-        "model": "gpt-5.5",
-        "effort": "medium",
-        "fallbacks": [
-          {
-            "model": "gpt-5.4",
-            "effort": "high"
-          }
-        ]
-      },
-      "search-capture-shard": {
-        "model": "gpt-5.4",
-        "effort": "medium",
-        "fallbacks": [
-          {
-            "model": "gpt-5.3-codex-spark",
-            "effort": "high"
-          }
-        ]
-      },
-      "search-finalize": {
-        "model": "gpt-5.5",
-        "effort": "medium",
-        "fallbacks": [
-          {
-            "model": "gpt-5.4",
-            "effort": "high"
-          }
-        ]
-      },
       "score": {
         "model": "gpt-5.5",
         "effort": "medium",
@@ -161,6 +105,10 @@
         "effort": "high"
       },
       "prep-interview": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "story-bank": {
         "model": "gpt-5.5",
         "effort": "high"
       },

@@ -1,6 +1,6 @@
 # Prioritization Model
 
-How jobs in `job_list` get scored and prioritized. The model is explicit and user-tunable: criteria and weights live in `<project>/strategy/scoring-config.json`; the math lives in `scripts/score_jobs.py`. The agent rates, the script computes — never hand-compute weighted scores.
+How jobs in `job_list` get scored and prioritized. The model is explicit and user-tunable: criteria and weights live in `<project>/strategy/scoring-config.json`; the math lives in `scripts/score_jobs.py`. The agent rates, the script computes — never hand-compute weighted scores. In the RoleScout runner, the script/upsert step is runner-owned so agent sandbox or approval settings cannot silently prevent score propagation.
 
 ## Two numbers, different meanings
 
@@ -29,8 +29,8 @@ Weighted score = Σ(weight × rating) / 5 → 0–100. Priority mapping: ≥ 70 
 
 1. Read `<project>/strategy/scoring-config.json`. If missing, seed it from `references/scoring-config.default.json` (new_project.py does this automatically) and **show the user the criteria/weights, inviting adds/removes/reweights** — the model belongs to the user; these defaults are just a starting proposal.
 2. Rate each job 1–5 per criterion with a one-line rationale. Distinguish evidence-based ratings from estimates.
-3. Write ratings to `<project>/strategy/job-ratings.json`, then run `python scripts/score_jobs.py <project>/strategy/job-ratings.json` — it validates criteria names, ratings, and weight sum, then emits computed scores + suggested priorities.
-4. Show the user the ranked table with per-criterion rationale before writing `priority` back to `job_list`.
+3. Write ratings to `<project>/strategy/job-ratings.json`. In the RoleScout runner, `scripts/finalize_score.py` then runs `python scripts/score_jobs.py <project>/strategy/job-ratings.json`, validates criteria names/ratings/weight sum, writes computed scores, upserts `fit_score`/`priority`/`job_group` back to `job_list`, and rebuilds the visible view. In a standalone/manual run, run those deterministic scripts yourself.
+4. Show the user the ranked table with per-criterion rationale before treating the score run as complete.
 
 ## Priority overrides
 

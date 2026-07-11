@@ -171,7 +171,7 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
                 "from project targets and current job evidence; run profile-intake to "
                 "refresh candidate-profile.md + evidence-map.md, then rerun score")
         elif workflow in ("prep", "prep-strategy", "prep-resume", "prep-linkedin",
-                          "prep-interview"):
+                          "prep-interview", "story-bank"):
             blocking.append(
                 f"'{stale}' is newer than candidate-profile.md — '{workflow}' cannot "
                 "rebuild the profile and would ground on the OLD materials. Fix: run "

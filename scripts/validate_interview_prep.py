@@ -68,9 +68,38 @@ def _key(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).lower()
 
 
+def _slug(text: str, fallback: str = "role") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+    return (slug[:48].strip("-") or fallback)
+
+
+def _focused_prep_files(project: Path) -> list[Path]:
+    context_path = project / "interviews" / "interview-context.json"
+    if not context_path.exists():
+        return []
+    try:
+        data = json.loads(context_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    roles = data.get("roles") if isinstance(data, dict) else None
+    if not isinstance(roles, list):
+        return []
+    files: list[Path] = []
+    for role in roles:
+        if not isinstance(role, dict):
+            continue
+        slug = _slug(f"{role.get('company', '')}-{role.get('title', '')}", "role")
+        files.append(project / "interviews" / slug / "prep-notes.md")
+    return files
+
+
 def _prep_files(target: Path) -> list[Path]:
     if target.is_file():
         return [target]
+    if (target / "interviews").exists():
+        focused = _focused_prep_files(target)
+        if focused:
+            return focused
     interviews = target / "interviews"
     if target.name == "interviews":
         interviews = target
