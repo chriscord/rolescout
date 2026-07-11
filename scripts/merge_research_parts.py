@@ -10,19 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from normalize_job_url import canonicalize as canonicalize_job_url
 
-TRACKING_PARAMS = {
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "gclid", "fbclid", "ref", "referral", "src", "source", "trk", "trkid",
-    "refid", "gh_src", "lever-source", "icid", "mc_cid", "mc_eid",
-    "trackingid", "ebp", "origin", "lipi", "midtoken", "midsig", "trkemail",
-}
 
 CANDIDATE_ID_FIELDS = {
     "company", "title", "job_id", "source_url", "job_page_url", "url",
@@ -40,16 +33,10 @@ def _configure_stdio() -> None:
 
 def _canonical_url(url: str) -> str:
     url = str(url or "").strip()
-    if not re.match(r"^https?://", url):
+    try:
+        return canonicalize_job_url(url)
+    except ValueError:
         return url.lower()
-    parts = urlsplit(url)
-    netloc = parts.netloc.lower()
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-    path = re.sub(r"/+$", "", parts.path) or "/"
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-             if k.lower() not in TRACKING_PARAMS]
-    return urlunsplit(("https", netloc, path, urlencode(query), ""))
 
 
 def _candidate_key(candidate: dict) -> str:

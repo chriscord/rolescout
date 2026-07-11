@@ -24,13 +24,15 @@ from types import ModuleType
 from ..paths import repo_root
 
 SCRIPT_NAMES = [
-    "schema_defs", "store_io", "normalize_job_url", "validate_job_rows",
+    "schema_defs", "store_io", "normalize_job_url", "job_url_policy",
+    "location_normalize", "jd_text_cleaner", "validate_job_rows",
     "validate_tracker_rows", "validate_resume_bullets", "score_jobs",
     "validate_resume_tailoring", "grade_run", "qa_static", "upsert_rows",
     "init_db", "new_project", "ensure_recruiting_sheet",
     "capture_linkedin_profile", "resolve_company_sources",
     "build_location_search_urls",
     "merge_research_parts", "persist_job_rows", "probe_linkedin_jobs",
+    "deterministic_search", "finalize_score",
     "location_eligibility", "validate_linkedin_review",
     "validate_interview_prep", "render_docx_gate",
     "generate_coverage_audit", "analyze_search_plan", "analyze_search_coverage",

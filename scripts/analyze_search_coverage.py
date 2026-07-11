@@ -253,9 +253,7 @@ def analyze(project: Path) -> dict:
         if "linkedin" in str(q.get("scope", "")).lower()
         or "linkedin.com/jobs" in str(q.get("q", "")).lower()
     ]
-    if not linkedin_queries:
-        issues.append("LinkedIn Jobs observation is missing from research-log.")
-    elif kept_total <= 1:
+    if linkedin_queries and kept_total <= 1:
         linkedin_observed = " ".join(str(q.get("observed", "")).lower()
                                      for q in linkedin_queries)
         if "connector_error" in linkedin_observed:

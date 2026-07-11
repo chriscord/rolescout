@@ -365,6 +365,11 @@ def _csv_rows(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def _job_view_path(proj: Path) -> Path:
+    visible = proj / "data" / "job_list.visible.csv"
+    return visible if visible.exists() else proj / "data" / "job_list.csv"
+
+
 def list_projects() -> list[dict]:
     root = repo_root()
     out = []
@@ -375,7 +380,7 @@ def list_projects() -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
         meta = project_meta.load(proj)
-        jobs = _csv_rows(proj / "data" / "job_list.csv")
+        jobs = _csv_rows(_job_view_path(proj))
         tracker = _csv_rows(proj / "data" / "tracker.csv")
         out.append({"code": proj.name, "person": doc.get("person", ""),
                     "focus": doc.get("focus", ""), "created_at": doc.get("created_at", ""),
@@ -661,6 +666,7 @@ def add_manual_job(code: str, payload: dict) -> dict:
         if up.returncode != 0:
             raise RoleScoutError("manual job save refused: " +
                                  (up.stdout + up.stderr).strip()[:800])
+        core.run_script("build_search_view", str(proj), env=env)
     finally:
         for p in (raw_path, norm_path):
             try:
@@ -754,7 +760,7 @@ def jobs_with_scores(proj: Path) -> list[dict]:
     applied = {r["job_id"]: r.get("status", "")
                for r in _csv_rows(proj / "data" / "tracker.csv")
                if r.get("job_id") and r.get("status", "") not in ("", "to_apply")}
-    rows = _csv_rows(proj / "data" / "job_list.csv")
+    rows = _csv_rows(_job_view_path(proj))
     focused = _focused_ids(proj)
     for row in rows:
         jid = row.get("job_id", "")
@@ -925,8 +931,9 @@ def update_project(code: str, payload: dict) -> dict:
     if not (proj / "project.json").exists():
         raise RoleScoutError(f"project not found: {code}")
     allowed = {k: payload[k] for k in
-               ("target_locations", "focus_role", "target_level", "target_companies",
-                "comp_range", "negatives", "archived") if k in payload}
+              ("target_locations", "focus_role", "target_level", "target_companies",
+                "comp_range", "search_runtime_profile", "search_view_filter_mode",
+                "negatives", "archived") if k in payload}
     meta = project_meta.update(proj, **allowed)
     return {"ok": True, "meta": {k: meta[k] for k in project_meta.DEFAULTS}}
 

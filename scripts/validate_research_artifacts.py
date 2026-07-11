@@ -47,7 +47,11 @@ import store_io
 
 from schema_defs import RESEARCH_DECISIONS as VALID_DECISIONS
 from schema_defs import RESEARCH_REASON_CODES as VALID_REASONS
-VALID_SOURCE_STATUS = {"planned", "ok", "blocked", "empty", "failed"}
+VALID_SOURCE_STATUS = {
+    "planned", "ok", "blocked", "empty", "failed",
+    "running", "scanned", "no_match", "blocked_auth", "blocked_tooling",
+    "failed_retryable", "failed_terminal", "skipped_not_applicable",
+}
 JD_TEXT_FIELDS = ("raw_text", "jd_text", "job_description", "description",
                   "content", "body_text", "html")
 MIN_JD_TEXT_CHARS = 200
@@ -331,6 +335,8 @@ def main() -> int:
 
     seen_companies = set()
     kept_companies = set()
+    legacy_non_direct_failed_capture = 0
+    legacy_non_direct_companies = set()
     for i, c in enumerate(cands):
         seen_companies.add(norm(c.get("company", "")))
         if c.get("decision") == "kept":
@@ -341,6 +347,16 @@ def main() -> int:
             fails.append(f"log candidate {i} ({c.get('company')}/{c.get('title')}): missing reason")
         if c.get("decision") == "failed_capture":
             fb = c.get("fallbacks_attempted", [])
+            failed_text = " ".join([
+                str(c.get("reason", "")),
+                str(c.get("reason_code", "")),
+                str(c.get("notes", "")),
+                " ".join(str(x) for x in fb),
+            ]).lower()
+            if "listing_or_non_direct_url" in failed_text:
+                legacy_non_direct_failed_capture += 1
+                legacy_non_direct_companies.add(str(c.get("company", "")).strip())
+                continue
             if len(fb) < 3:
                 fails.append(f"log candidate {i} ({c.get('company')}): failed_capture with "
                              f"{len(fb)} fallbacks (need >=3 source types attempted)")
@@ -512,6 +528,14 @@ def main() -> int:
         for i, c in enumerate(cands):
             if c.get("decision") != "failed_capture":
                 continue
+            failed_text = " ".join([
+                str(c.get("reason", "")),
+                str(c.get("reason_code", "")),
+                str(c.get("notes", "")),
+                " ".join(str(x) for x in c.get("fallbacks_attempted", [])),
+            ]).lower()
+            if "listing_or_non_direct_url" in failed_text:
+                continue
             cn = norm(c.get("company", ""))
             if cn not in seed_norms:
                 continue
@@ -566,6 +590,14 @@ def main() -> int:
             continue
         fails.append(f"universe company '{c.get('name')}' never attempted: no log entries "
                      "and no blocked/empty source with fallbacks_used in source-plan")
+
+    if legacy_non_direct_failed_capture:
+        names = ", ".join(sorted(name for name in legacy_non_direct_companies if name)[:5])
+        suffix = f" across {names}" if names else ""
+        warns.append(
+            f"{legacy_non_direct_failed_capture} legacy failed_capture candidate(s)"
+            f"{suffix} were listing_or_non_direct_url and treated as skipped/non-posting"
+        )
 
     print(f"artifacts: 5/5 | universe: {len(companies)} companies | "
           f"log: {len(cands)} candidates, {len(queries)} queries")

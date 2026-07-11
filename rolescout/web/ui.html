@@ -763,7 +763,7 @@ function renderWorkspace(){
   const wf = $('wfchips');
   // Canonical command order for the chat chips (unknown workflows fall to the end).
   const WF_ORDER = ['search','score','prep','prep-strategy','prep-resume',
-                    'prep-linkedin','prep-interview','apply','followup'];
+                    'prep-linkedin','story-bank','prep-interview','apply','followup'];
   const wfRank = w => { const i = WF_ORDER.indexOf(w); return i < 0 ? WF_ORDER.length : i; };
   if (PROJECT_WORKFLOW_HIDDEN.has(wfSel)) wfSel = 'search';
   const orderedWf = [...(S.workflows||[])]

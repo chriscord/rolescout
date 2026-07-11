@@ -148,7 +148,7 @@ The browser opens automatically at `http://127.0.0.1:8787`. The interface is loo
 
 2. **Projects.** Create or select a project. Treat one project as one job-search and preparation session. Set the session preferences freely: example companies, target role, level, target location, compensation range, exclusions, and any other constraints that should guide the search.
 
-3. **Search.** Use the chat session panel on the right to choose `search`, then click **Run**. This can start even while `profile-intake` is still running; fit/grouping is marked provisional until the profile and evidence map are ready. This can take time because RoleScout checks many ATS and company-career sources. When the run finishes, the Jobs tab contains the researched job list. The first search run also scores fit against the current resume/profile when available. Star positions on the left side of the job list to register them as **focused** positions.
+3. **Search.** Use the chat session panel on the right to choose `search`, then click **Run**. This can start even while `profile-intake` is still running. Baseline search is deterministic and provider-first: RoleScout scans supported ATS/company-career sources, captures direct posting URLs and JD snapshots, and writes validator-clean rows. Run `score` after search when you want fit/grouping against the current resume/profile. Star positions on the left side of the job list to register them as **focused** positions.
 
 > **Important.** Prep commands require at least one focused position. This is intentional: they prepare strategy, resume, LinkedIn, and interview materials for positions you have chosen to pursue.
 
@@ -189,8 +189,8 @@ rolescout run apply
 |---|---|
 | `rolescout init --person you --focus ai-product --locations "San Francisco"` | Creates or activates a profile/project pair. Use `--companies`, `--role`, `--level`, `--comp-range`, and `--negatives` to set project preferences from the command line. |
 | `rolescout run profile-intake --person you` | Builds or refreshes `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` from resume/materials and accepted LinkedIn current-source content. |
-| `rolescout run search` | Builds the opportunity thesis, searches relevant sources, writes the Jobs list, and runs scoring once after the first search. |
-| `rolescout run score` | Recomputes fit and priority for the current Jobs list using the active project preferences and scoring model. |
+| `rolescout run search` | Runs deterministic provider-first discovery, captures direct posting URLs/JD snapshots, writes the raw Jobs store, and builds the UI-visible Jobs view. It does not score by default. |
+| `rolescout run score` | Rates every current UI-visible Jobs row through runner-built compact batches, then the runner recomputes weighted scores and writes `fit_score`/`priority` back to the Jobs view. |
 | `rolescout run prep` | Runs strategy, resume, LinkedIn, and interview preparation for focused positions. |
 | `rolescout run prep-strategy` | Produces the grouped application strategy and priority plan only. |
 | `rolescout run prep-resume` | Produces targeted resume drafts for the focused job groups. |

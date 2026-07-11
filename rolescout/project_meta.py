@@ -12,6 +12,8 @@ Fields:
   target_companies   list[str]  optional seeds — the agent explores SIMILAR
                                 companies too, never only these
   comp_range         str        optional (sensitive — never shared externally)
+  search_runtime_profile str    optional: polite / standard / fast / deep
+  search_view_filter_mode str   optional: llm / deterministic
   negatives          list[str]  optional excludes (companies/titles/industries)
   schedules          list       reserved for the scheduler feature (not active)
   archived           bool
@@ -26,10 +28,14 @@ from pathlib import Path
 META_NAME = "project-meta.json"
 
 LIST_FIELDS = ("target_locations", "target_companies", "negatives")
-STR_FIELDS = ("focus_role", "target_level", "comp_range")
+STR_FIELDS = (
+    "focus_role", "target_level", "comp_range", "search_runtime_profile",
+    "search_view_filter_mode",
+)
 DEFAULTS = {
     "target_locations": [], "focus_role": "", "target_level": "",
-    "target_companies": [], "comp_range": "", "negatives": [],
+    "target_companies": [], "comp_range": "", "search_runtime_profile": "fast",
+    "search_view_filter_mode": "llm", "negatives": [],
     "schedules": [], "archived": False,
 }
 

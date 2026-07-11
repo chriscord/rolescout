@@ -29,6 +29,21 @@ TRACKING_PARAMS = {
     "trackingid", "ebp", "origin", "lipi", "midtoken", "midsig", "trkemail",
 }
 
+TRACKING_VALUE_PARAM_TOKENS = (
+    "fbclid",
+    "gclid",
+    "gh_src",
+    "utm_",
+)
+
+
+def _is_tracking_query_param(key: str, value: str) -> bool:
+    key_l = str(key or "").lower()
+    if key_l in TRACKING_PARAMS:
+        return True
+    value_l = str(value or "").lower()
+    return key_l == "t" and any(token in value_l for token in TRACKING_VALUE_PARAM_TOKENS)
+
 
 def canonicalize(url: str) -> str:
     url = url.strip()
@@ -40,7 +55,7 @@ def canonicalize(url: str) -> str:
         netloc = netloc[4:]
     path = re.sub(r"/+$", "", parts.path) or "/"
     query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-             if k.lower() not in TRACKING_PARAMS]
+             if not _is_tracking_query_param(k, v)]
     return urlunsplit(("https", netloc, path, urlencode(query), ""))
 
 
