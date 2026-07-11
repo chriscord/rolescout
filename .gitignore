@@ -21,17 +21,13 @@ app/
 # ---- AI build-process traces (internal; not product features) ----
 /BUILDLOG.md
 /STATUS.md
-/docs/plan/
-/docs/spec/dev-plan.md
+/docs/
 
 # ---- local-only QA/test harnesses ----
 /tests/
 /scripts/qa/
 /qa/
 /rolescout.local.env
-
-# ---- local reference material (not part of the product) ----
-docs/reference/
 
 # ---- generated / regenerable ----
 /dashboard/
