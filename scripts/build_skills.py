@@ -25,11 +25,12 @@ def package_bytes(skill_dir: Path) -> bytes:
         "source_sha256": hashlib.sha256(source).hexdigest(),
     }, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    # Stored entries avoid platform-specific deflate output while packages stay tiny.
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
         for member, data in ((f"{name}/SKILL.md", source),
                              (f"{name}/.source.json", manifest)):
             info = zipfile.ZipInfo(member, FIXED_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.external_attr = 0o100644 << 16
             archive.writestr(info, data)
     return output.getvalue()
