@@ -15,7 +15,7 @@ When the user picks jobs to act on:
 
 1. Confirm the `job_id` exists in `job_list` (add it via `job-opening-research` if not — the tracker never contains jobs the list doesn't know about).
 2. Build tracker rows: `application_id` = `app--<job_id>`, entry status `to_apply` (or `applied` if the user already applied outside RoleScout), `resume_version` pointing at the chosen variant, `next_action` + `next_action_due` set to something concrete.
-3. Validate then write: `python3 scripts/upsert_rows.py tracker rows.json` (runs `validate_tracker_rows.py` with job-list linkage and transition checks, upserts into SQLite on `application_id`, verifies read-after-write, regenerates the CSV mirrors and xlsx pipeline view).
+3. Validate then write: `python3 scripts/upsert_rows.py tracker rows.json` (validates linkage/transitions, upserts into the private pipeline SQLite store, and verifies full field equality). Exports are explicit via `rolescout export --private`; never create a combined public/private workbook.
 
 ## Status updates
 

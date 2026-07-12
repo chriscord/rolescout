@@ -7,7 +7,7 @@ description: Cluster researched jobs into target job groups, score fit, and prio
 
 Turn raw `job_list` rows into a small set of coherent target job groups with honest fit analysis and clear priorities. **Boundary**: this skill is whole-list triage after research — its scores/priorities/groups power the list UI and help the user CHOOSE what to focus. Once positions are focus-registered, `prep-strategy` owns the focused-set application strategy and may refine group assignments; never overwrite its `strategy/prep-strategy.md`. A "job group" is a cluster of roles a single positioning (one resume variant, one LinkedIn angle) can credibly serve.
 
-Work in the recruiting repo root; resolve the active search project via `active-project.json` per `references/project-structure.md` — `<project>` below means that directory, `<person>` the profile dir in its `project.json`. Inputs: `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` when available, plus the UI-visible job list (`<project>/data/job_list.visible.csv` when present, otherwise `job_list.csv`; see `references/recruiting-sheet-schema.md` for backends and columns). If job rows are missing, route to `job-opening-research` first. If the profile is missing, still group and prioritize from project targets, LinkedIn/source hints, and JD evidence; mark `role_fit`, group rationale, and priorities as provisional, do not invent candidate evidence, and tell the user to run `prep` before resume/LinkedIn tailoring.
+Work in the recruiting repo root; resolve the active search project via `active-project.json` per `references/project-structure.md`. In the public runtime, use only the runner's minimized candidate/evidence packet and UI-visible rows selected from the public SQLite repository (see `references/recruiting-sheet-schema.md`). If job rows are missing, route to `job-opening-research` first. If the profile is missing, still group and prioritize from project targets and JD evidence; mark profile-dependent fit as provisional and do not invent candidate evidence.
 
 ## Enrichment pre-pass (thin rows)
 
@@ -20,6 +20,27 @@ Group by what changes the *positioning*, not surface titles: function, seniority
 Give each group a slug (e.g. `platform-eng`, `ml-infra-lead`) — this exact slug goes in the `job_group` column and names folders in `resumes/` and `linkedin/`.
 
 ## Scoring
+
+Canonical inputs are fixed: read `profiles/<person>/candidate-profile.md`,
+`profiles/<person>/evidence-map.md`, `profiles/<person>/decision-policy.json`, and
+`references/scoring-policy.json`. The runner injects minimized contents from these exact
+paths; do not search for alternate profile/policy files. Decision-policy constraints and
+the static calibration anchors apply to every batch.
+
+The runner also injects `profiles/<person>/capability-ledger.json` when available and a
+versioned requirement contract from `<project>/targets/requirements/<job_id>.json` for each
+job. Evaluate every required atom independently. Separate direct functional tenure from
+adjacent exposure, cite EV IDs, and never add overlapping months twice. Minimum-required
+central and eligibility requirements take priority over preferred qualifications; an unmet
+or unknown central minimum must lower `role_fit` and `likelihood` as defined by the runner.
+The runner retains every explicit minimum/required atom, batches by output complexity, and
+derives `minimum_requirement` and `essential_qualification`; never emit those two ratings.
+Preferred requirements are a separate tie-break lane and never a hard gate. A repair packet
+contains exact expected IDs and must be reproduced exactly.
+The runner checkpoints every completed batch to its SQLite staging store. Do not treat a
+checkpoint as canonical output or attempt shared-file writes; the single coordinator resumes
+compatible validated rows and promotes canonical ratings after normal batch/repair completion
+or through the explicit cancellation-salvage path when the user stops a score run.
 
 Two numbers, defined in `references/prioritization-model.md` — read it before scoring:
 
@@ -52,7 +73,7 @@ Write `<project>/strategy/target-priorities.md` ranking the groups with rational
 
 ## Updating the store
 
-When running inside `rolescout run score` or the web UI, do not write `job_group`, `fit_score`, or `priority` back to `job_list` yourself and do not run `score_jobs.py`, `validate_job_rows.py`, or `upsert_rows.py`; the runner owns CSV/SQLite reads, compact batch construction, deterministic score math, validation, upsert, and visible-view rebuild. If the runner gives you an injected score batch, evaluate only that batch and return structured ratings rather than reading files. Keep batch output compact: no markdown/prose outside JSON, `reason` <= 180 characters, each criterion rationale <= 80 characters, and one rating object per input `job_id`. For a standalone/manual run outside the runner, write `job_group`, `fit_score`, and `priority` back to `job_list` by building a JSON list of partial rows (must include `job_id`, `captured_at`, `company`, `title`, `source_url` plus the updated fields) **as a file under `<project>/data/`** (e.g. `<project>/data/score-updates.json`) — never `/tmp`, `C:\tmp`, or an absolute OS path, which fail on Windows (FileNotFoundError/PermissionError). Then validate with `python scripts/validate_job_rows.py <project>/data/score-updates.json` and upsert (`python scripts/upsert_rows.py job_list <project>/data/score-updates.json` locally, or header-verified upsert via the Sheets connector — follow the write discipline in the schema reference). Delete the intermediate file after the upsert.
+When running inside `rolescout run score` or the web UI, do not write `job_group`, `fit_score`, or `priority` back to `job_list` yourself and do not run `score_jobs.py`, `validate_job_rows.py`, or `upsert_rows.py`; the runner owns CSV/SQLite reads, requirement-contract caching, output-aware batch construction, deterministic score math, validation, versioned staging, upsert, and visible-view rebuild. If the runner gives you an injected score batch, evaluate only that batch and return structured ratings rather than reading files. Return one `requirement_evaluations` item for every injected required ID as well as the policy evaluations; missing or duplicate coverage is a failed row, not a reason to guess. Do not return runner-derived criteria. Keep batch output compact: no markdown/prose outside JSON, `reason` <= 180 characters, each criterion rationale <= 80 characters, and one rating object per input `job_id`. For a standalone/manual run outside the runner, write `job_group`, `fit_score`, and `priority` back to `job_list` by building a JSON list of partial rows (must include `job_id`, `captured_at`, `company`, `title`, `source_url` plus the updated fields) **as a file under `<project>/data/`** (e.g. `<project>/data/score-updates.json`) — never `/tmp`, `C:\tmp`, or an absolute OS path, which fail on Windows (FileNotFoundError/PermissionError). Then validate with `python scripts/validate_job_rows.py <project>/data/score-updates.json` and upsert (`python scripts/upsert_rows.py job_list <project>/data/score-updates.json` locally, or header-verified upsert via the Sheets connector — follow the write discipline in the schema reference). Delete the intermediate file after the upsert.
 
 If the agent workspace is read-only or local shell/file writes are blocked, return a final JSON payload instead of failing:
 

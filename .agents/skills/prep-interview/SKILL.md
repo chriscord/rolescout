@@ -5,7 +5,9 @@ description: Build a per-position interview pack for FOCUSED positions — a tim
 
 # Prep: Interview
 
-Scope: focused positions (`<project>/data/focused-jobs.json`), or the specific position the user names. Inputs per position: the tracker row (**which interview stage?** — a screen, an onsite, and a final round need different packs), the resume variant **actually submitted** (tracker `resume_version`; interviewers probe the resume they received — fall back to the group resume/baseline only if nothing was submitted yet), user's standing instructions, the JD snapshot (`targets/jobs/<job_id>.json`) — requirements and responsibilities drive everything — plus the resume scoring/validation outputs (`resumes/<group>/`) and strategy group analysis (`strategy/`) for the weakness-driven sections. **Output language.** Write all questions and answers in the user's language — take it from the user's standing instructions / profile locale; **default to English** when unspecified. Never hard-code a specific language: this skill and `prep-linkedin` must resolve output language the same way. Evidence discipline: every answer draws on `profiles/<person>/evidence-map.md`; thin story coverage → ask the user for a real example, never script fiction.
+Follow the shared publish and quality contract in `references/prep-quality-contract.md`.
+
+Scope: focused positions (`<project>/data/focused-jobs.json`), or the specific position the user names. Inputs per position: the tracker row (**which interview stage?** — a screen, an onsite, and a final round need different packs), the resume variant **actually submitted** (tracker `resume_version`; interviewers probe the resume they received — fall back to the group resume/baseline only if nothing was submitted yet), canonical `profiles/<person>/candidate-profile.md`, `profiles/<person>/evidence-map.md`, and `profiles/<person>/decision-policy.json`, the JD snapshot (`targets/jobs/<job_id>.json`) — requirements and responsibilities drive everything — plus the resume scoring/validation outputs (`resumes/<group>/`) and strategy group analysis (`strategy/`) for the weakness-driven sections. These paths are fixed; do not search for substitutes. **Output language.** Write all questions and answers using the canonical decision policy; **default to English** when unspecified. Never hard-code a specific language: this skill and `prep-linkedin` must resolve output language the same way. Evidence discipline: every answer draws on `profiles/<person>/evidence-map.md`; thin story coverage → ask the user for a real example, never script fiction.
 
 ## Step 0 — MANDATORY research pass (before drafting anything)
 
@@ -46,7 +48,10 @@ Build or refresh the story bank from the submitted resume variant:
 
 **Ban the generic-praise template.** Never structure a "why" answer as "[subject] is attractive because [facts anyone can recite] + my experience fits". The test for every sentence: *could any other candidate say this word-for-word?* If yes, cut or personalize it. "Why" answers are personal narratives: a concrete moment (from the evidence map) → what it sparked → what the user actually did about it → why now, this company/position. **Truthfulness under personalization**: every narrative beat backed by evidence or tagged `[inferred — confirm]`. **2–3 labeled versions per why-question** (V1 personal-narrative — default lead, V2 strategic/analytical, V3 concise 30-second); behavioral answers vary by *story choice* (cite story IDs), not by rephrasing.
 
-## Output — `interviews/<company>-<role>/prep-notes.md` per position
+## Output — `interviews/<company>-<role>-<job-digest>/prep-notes.md` per position
+
+The runner supplies the exact collision-safe path. Preserve its job-identity suffix exactly;
+same-company requisitions may share a visible title and must never overwrite one another.
 
 Short metadata header (position, stage, resume version, date), then **exactly these H2 sections, in this order** — the web app's Prep tab renders this file directly, so the titles and order are a UI contract:
 
@@ -61,6 +66,8 @@ Short metadata header (position, stage, resume version, date), then **exactly th
 9. `## Sources` — every URL from Step 0 as a **table**: `| # | Source | What it informed |` (Source = a markdown link to the URL; "What it informed" = one-line note on what it contributed). No sources table = the research pass didn't happen = incomplete output.
 
 The story bank is **not** part of this file — it is the independent `interviews/story-bank.json` artifact (Step 1), rendered separately at the bottom of the Interview tab. Consistency rule: every section that lists questions/sources is a **table**, matching the tables above — no prose/bullet sections in the pack.
+
+Every required section must contain substantive, role-specific content before the final pack is published. A runner placeholder such as `Pending` or `Missing <stage> stage output` is a failure, not a partial interview deliverable.
 
 `## Negotiation` is appended **only at offer stage**: market context clearly labeled as estimate, the user's floor from profile constraints, current compensation never disclosed without explicit approval. Omit at earlier stages.
 

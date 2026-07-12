@@ -7,6 +7,8 @@ description: Score and rewrite the user's resume for focused target job groups, 
 
 Produce resume variants that are truthful, targeted, and materially rewritten for the focused job groups. The baseline resume is raw material, not the deliverable.
 
+Follow the shared publish and quality contract in `references/prep-quality-contract.md`.
+
 Scope contract: target groups come from the **focused positions** (`<project>/data/focused-jobs.json` + their `job_group` values; run `prep-strategy` first if ungrouped). Empty focus -> stop and ask the user to register focus. Truthfulness rules are absolute: every claim traces to `profiles/<person>/evidence-map.md` or explicit user input; missing metrics are asked, never invented (`references/resume-bullet-rules.md`, `references/local-boundaries.md`).
 
 Do not generate an application resume for parked/constraint groups by default. For groups whose strategy file says not to apply, write `resumes/<group>/resume-not-generated.md` explaining the blocker and required user override; only generate a resume after explicit role-specific override.
@@ -17,6 +19,7 @@ Read before drafting:
 
 - `profiles/<person>/candidate-profile.md`
 - `profiles/<person>/evidence-map.md`
+- `profiles/<person>/decision-policy.json` (canonical exclusions, trajectory rules, and positioning preferences)
 - baseline resume in `profiles/<person>/` (latest user-provided resume)
 - `profiles/<person>/linkedin-current.md` (latest captured LinkedIn, when present)
 - `<project>/strategy/prep-strategy.md`
@@ -24,6 +27,7 @@ Read before drafting:
 - JD snapshots for every focused job in the group under `<project>/targets/jobs/*.json`
 
 If candidate profile or evidence map is missing, stop and tell the user to run `rolescout run profile-intake --person <person>` first. Tailoring without an evidence map is a fabrication risk; this skill consumes the profile and evidence map, it does not create them.
+These three profile/policy paths are a fixed contract; do not discover substitutes elsewhere.
 
 ## Step 0 - Cross-source recency & discrepancy check
 
@@ -41,6 +45,7 @@ For each active group, write `resumes/<group>/target-brief.json` before writing 
 
 ```json
 {
+  "schema": "rolescout-resume-target-brief-v1",
   "group": "strategy-ops-gtm",
   "source_job_ids": ["..."],
   "positioning_angle": "one sentence from the strategy doc, adjusted to the JDs",
@@ -58,6 +63,10 @@ For each active group, write `resumes/<group>/target-brief.json` before writing 
   ]
 }
 ```
+
+The runner packet's `artifact_contract` is authoritative. Return both JSON files as
+typed artifact `json` values, not JSON strings in `text`; do not substitute alternate
+top-level arrays such as `must_have_requirements` or `required_requirements`.
 
 Extract requirements from the representative JDs: must-haves, nice-to-haves, recurring language, seniority markers, and domain terms. This is the relevance filter; generic role-family intuition is not enough.
 
@@ -77,7 +86,7 @@ Method:
 
 1. Map each must-have requirement to the strongest evidence-map entries. Draft from evidence, never from aspiration.
 2. Rewrite bullets for the target group. A tailored bullet should usually combine role language + evidence + result/scope. Selecting an original bullet unchanged is allowed only sparingly for exact metrics or legal/truthfulness precision.
-   Baseline bullets may be rough notes in **any language** (Korean memos, fragments, keyword dumps) — that is expected input, not a blocker. Always produce polished, professional **English** bullets tailored to the target group. Target length per bullet: **20–27 words and 200–250 characters** (hard cap 250 — the validator enforces it); shorter is acceptable only for exact-metric bullets that lose precision when padded.
+   Baseline bullets may be rough notes in **any language** (Korean memos, fragments, keyword dumps) — that is expected input, not a blocker. Always produce polished, professional **English** bullets tailored to the target group. Target length per bullet: **16–27 words** (hard cap 250 characters); shorter is acceptable for exact-metric bullets that lose precision when padded. The complete experience section has a one-page budget of at most 16 bullets and 360 bullet words.
 3. Cut ruthlessly. A bullet without a defensible reason for this group goes, even if impressive.
 4. Reorder content so the most target-relevant proof leads within the resume constraints. Chronological employer order can remain, but the top third must carry the target story.
 5. Preserve truth and attribution. Do not inflate scope, seniority, metrics, AI/product claims, languages, visa status, or employment continuity.
@@ -102,7 +111,9 @@ Valid `rewrite_type`: `new`, `substantial_rewrite`, `compressed`, `reframed`, `s
 
 ## Step 4 - Validate content
 
-Extract the original resume bullets to `resumes/baseline-extracted.md` (one bullet per line); use that file as the baseline input. **Re-extract on every run from the CURRENT latest baseline resume** — never reuse a `baseline-extracted.md` that is older than the baseline resume file (a replaced resume would otherwise be validated against the old baseline).
+Use the runner-created `resumes/baseline-extracted.md` (one source bullet per line) as the baseline input. The runner re-extracts it once per run from the current latest user-provided resume before group agents start. Group agents must not create or overwrite this shared file.
+
+Keep audit-only content out of `resume-draft.md`: no EV IDs, requirement IDs, target labels, evidence-gap sections, validation notes, or unsupported placeholders. Put those items in `reasons.json`, `target-brief.json`, or `resume-validation.md`. Preserve the baseline resume's professional section order and visual hierarchy unless the validation report documents a deliberate improvement; Skills belongs after Education for a baseline that uses that order.
 
 Run both validators before generating DOCX:
 
@@ -158,6 +169,16 @@ Write `resumes/<group>/resume-validation.md` with:
 ## Regeneration semantics
 
 Rerun regenerates per-group artifacts **in place** (same filenames) from the latest focus set, latest baseline, and latest evidence map — never append variant copies. Groups that are no longer in the focused set: move their `resumes/<group>/` folder to `resumes/_retired/<group>-<YYYY-MM-DD>/` and say so in the run summary — stale variants must not keep appearing as current in the UI. If the baseline resume changed since the last run, say what changed at the top of each regenerated `resume-validation.md`.
+
+The runner owns publish state. It stages every generated group before validation,
+retries a schema/content failure up to two times with deterministic validator
+feedback from every prior attempt and the previous generated artifact set. A later
+repair must preserve all earlier passing gates instead of fixing one issue by
+reintroducing another. A repair may return only changed
+paths; the runner merges that patch over the prior complete set before validation.
+It then
+publishes each passing group atomically. A failed group must not suppress or roll
+back a passing sibling group; unvalidated staging is diagnostic, never current.
 
 ## Done when
 

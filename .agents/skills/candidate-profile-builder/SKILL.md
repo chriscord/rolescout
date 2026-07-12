@@ -68,7 +68,7 @@ The runner's preflight prints a staleness warning naming the newer file — trea
 
 ## Sensitive data
 
-Compensation, visa status, contact details, and demographics stay in these local artifacts only. Never copy them into external systems (see `references/local-boundaries.md`).
+Compensation history, visa/work-authorization status, contact details, and demographics stay local-only and are stripped from model packets by default. Target compensation is a search preference and may be used by relevant search/strategy model stages (see `references/local-boundaries.md`).
 
 ## Done when
 
