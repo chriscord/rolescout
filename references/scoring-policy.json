@@ -1,0 +1,27 @@
+{
+  "schema": "rolescout-scoring-policy-v1",
+  "version": 1,
+  "role_fit_anchors": {
+    "5": "Direct target function with all central must-haves evidenced.",
+    "4": "Strong target fit with only a limited, addressable gap.",
+    "3": "Credible adjacent function; material transferability must be explicit.",
+    "2": "Remote adjacency or multiple material gaps; not a normal target.",
+    "1": "Different profession or core qualification mismatch; aspirational only."
+  },
+  "career_trajectory_anchors": {
+    "5": "Clearly forward or level-equivalent under the decision policy.",
+    "3": "Trajectory is genuinely ambiguous from supplied evidence.",
+    "1": "Violates a no-backward-progression policy without an explicit exception."
+  },
+  "essential_qualification_anchors": {
+    "5": "No essential qualification exists, or every explicit must-have credential is evidenced.",
+    "3": "An explicit must-have credential cannot be confirmed from supplied evidence.",
+    "1": "An explicit must-have degree, license, certification, or admission is not met."
+  },
+  "rules": [
+    "Preferred and nice-to-have qualifications never count as essential qualifications.",
+    "The model semantically evaluates every canonical custom policy with an outcome, confidence, and evidence; deterministic code only enforces that structured outcome.",
+    "Company quality, compensation, or generic brand growth must not compensate for a dealbreaker.",
+    "Apply the same anchors in every independent batch."
+  ]
+}

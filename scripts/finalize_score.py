@@ -7,7 +7,7 @@ depend on an agent sandbox:
 
   1. run scripts/score_jobs.py to compute strategy/job-scores.json
   2. write fit_score/priority/job_group updates back to job_list
-  3. rebuild data/job_list.visible.csv
+  3. rebuild the SQLite job_visibility selection
 
 Exit codes:
   0 = all visible rows have ratings+scores and updates were applied
@@ -18,7 +18,6 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import subprocess
@@ -28,8 +27,8 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
+import store_io  # noqa: E402
 from schema_defs import JOB_LIST_COLUMNS  # noqa: E402
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SUMMARY_NAME = "score-finalize-summary.json"
@@ -78,18 +77,6 @@ def _read_json(path: Path, default: Any) -> Any:
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _csv_rows(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open(newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
-def _job_view_path(project: Path) -> Path:
-    visible = project / "data" / "job_list.visible.csv"
-    return visible if visible.exists() else project / "data" / "job_list.csv"
 
 
 def _rating_group(entry: dict[str, Any]) -> str:
@@ -146,14 +133,29 @@ def _fallback_rating(job_id: str, row: dict[str, str], criteria: list[str]) -> d
     }
 
 
+def _is_deterministic_fallback(entry: dict[str, Any]) -> bool:
+    text = " ".join([
+        str(entry.get("reason", "")),
+        json.dumps(entry.get("rationale", {}), ensure_ascii=False),
+    ]).lower()
+    return "deterministic fallback: no batch evaluator rating" in text
+
+
 def _normalize_rating_entry(entry: dict[str, Any], criteria: list[str]) -> dict[str, Any]:
     ratings = entry.get("ratings", {})
     if not isinstance(ratings, dict):
         ratings = {}
-    normalized = {}
+    nested_rationale: dict[str, str] = {}
+    normalized: dict[str, Any] = {}
     for name in criteria:
         value = ratings.get(name)
-        normalized[name] = value if isinstance(value, int) and 1 <= value <= 5 else 1
+        if isinstance(value, dict):
+            nested_rationale[name] = str(value.get("rationale", "")).strip()
+            value = value.get("score")
+        # Accept the legacy/nested shape emitted by some evaluator runs, but do
+        # not manufacture a score for genuinely missing or invalid output.
+        # score_jobs.py remains the final strict validation boundary.
+        normalized[name] = value
     entry = dict(entry)
     entry["ratings"] = normalized
     if not _rating_group(entry):
@@ -162,7 +164,8 @@ def _normalize_rating_entry(entry: dict[str, Any], criteria: list[str]) -> dict[
     if not isinstance(rationale, dict):
         rationale = {}
     for name in criteria:
-        rationale.setdefault(name, "Conservative normalized score; evaluator output was incomplete.")
+        if nested_rationale.get(name) and not str(rationale.get(name, "")).strip():
+            rationale[name] = nested_rationale[name]
     entry["rationale"] = {name: str(rationale.get(name, "")) for name in criteria}
     return entry
 
@@ -174,22 +177,18 @@ def _ensure_visible_rating_coverage(
     visible_rows: list[dict[str, str]],
 ) -> tuple[list[dict[str, Any]], int]:
     criteria = _criteria_names(project)
-    clean = [item for item in ratings if isinstance(item, dict)]
+    clean = [
+        item for item in ratings
+        if isinstance(item, dict) and not _is_deterministic_fallback(item)
+    ]
     if not criteria:
         return clean, 0
+    unnormalized = clean
     clean = [_normalize_rating_entry(item, criteria) for item in clean]
-    seen = {str(item.get("job_id", "")).strip() for item in clean}
-    added = 0
-    for row in visible_rows:
-        job_id = str(row.get("job_id", "")).strip()
-        if not job_id or job_id in seen:
-            continue
-        clean.append(_fallback_rating(job_id, row, criteria))
-        seen.add(job_id)
-        added += 1
-    if added:
+    removed = len([item for item in ratings if isinstance(item, dict)]) - len(clean)
+    if removed or clean != unnormalized:
         _write_json(ratings_path, clean)
-    return clean, added
+    return clean, 0
 
 
 def _priority_overrides(project: Path) -> dict[str, str]:
@@ -241,13 +240,53 @@ def finalize(project: Path) -> tuple[int, dict[str, Any]]:
             output=(init.stdout + init.stderr).strip()[:1200],
         )
 
-    visible_rows = _csv_rows(_job_view_path(project))
+    visible_rows = store_io.read_visible_job_rows()
     ratings = _read_json(ratings_path, [])
     if not isinstance(ratings, list):
         ratings = []
+    fallback_ids = {
+        str(item.get("job_id", "")).strip()
+        for item in ratings
+        if isinstance(item, dict) and _is_deterministic_fallback(item)
+        and str(item.get("job_id", "")).strip()
+    }
     ratings, fallback_ratings = _ensure_visible_rating_coverage(
         project, ratings_path, ratings, visible_rows
     )
+
+    criteria = _criteria_names(project)
+    visible_ids = [row.get("job_id", "") for row in visible_rows if row.get("job_id")]
+    rating_by_id = {
+        str(item.get("job_id", "")).strip(): item
+        for item in ratings if isinstance(item, dict) and str(item.get("job_id", "")).strip()
+    }
+    invalid_visible: list[str] = []
+    for job_id in visible_ids:
+        item = rating_by_id.get(job_id)
+        if item is None:
+            continue
+        values = item.get("ratings", {}) if isinstance(item, dict) else {}
+        if (
+            not isinstance(values, dict)
+            or set(values) != set(criteria)
+            or any(not isinstance(value, int) or not 1 <= value <= 5 for value in values.values())
+        ):
+            invalid_visible.append(job_id)
+    if invalid_visible:
+        return 2, _summary_payload(
+            project,
+            status="partial",
+            reason=(
+                "evaluator coverage is incomplete or invalid; deterministic scoring "
+                "was not run and no score updates were written"
+            ),
+            ratings_rows=len(rating_by_id),
+            visible_rows=len(visible_ids),
+            rated_visible_rows=len(rating_by_id) - len(invalid_visible),
+            missing_visible_rows=len(invalid_visible),
+            missing_visible_examples=invalid_visible[:20],
+            updated_rows=0,
+        )
 
     score = _run([sys.executable, str(ROOT / "scripts" / "score_jobs.py"), str(ratings_path)], project)
     score_out = (score.stdout + score.stderr).strip()
@@ -274,13 +313,44 @@ def finalize(project: Path) -> tuple[int, dict[str, Any]]:
         for item in scores if isinstance(item, dict) and str(item.get("job_id", "")).strip()
     }
 
-    raw_rows = _csv_rows(project / "data" / "job_list.csv")
+    raw_rows = store_io.read_rows("job_list")
+    cleared_fallback_scores = 0
+    if fallback_ids:
+        repair_rows: list[dict[str, Any]] = []
+        for row in raw_rows:
+            if row.get("job_id") not in fallback_ids:
+                continue
+            patch: dict[str, Any] = dict(row)
+            for field in ("fit_score", "priority", "job_group", "notes"):
+                patch[field] = {"$clear": True}
+            repair_rows.append(patch)
+        if repair_rows:
+            repair_path = project / "data" / "score-fallback-repair.json"
+            _write_json(repair_path, repair_rows)
+            repair = _run(
+                [sys.executable, str(ROOT / "scripts" / "upsert_rows.py"),
+                 "job_list", str(repair_path)],
+                project,
+            )
+            try:
+                repair_path.unlink()
+            except OSError:
+                pass
+            if repair.returncode != 0:
+                return 1, _summary_payload(
+                    project,
+                    status="failed",
+                    reason="failed to clear legacy deterministic fallback scores",
+                    output=(repair.stdout + repair.stderr).strip()[:1200],
+                )
+            cleared_fallback_scores = len(repair_rows)
+            raw_rows = store_io.read_rows("job_list")
     raw_by_id = {row.get("job_id", ""): row for row in raw_rows if row.get("job_id")}
-    visible_ids = [row.get("job_id", "") for row in visible_rows if row.get("job_id")]
     visible_id_set = set(visible_ids)
     final_priority = _priority_overrides(project)
 
     rated_visible = sorted(visible_id_set & set(rating_by_id) & set(score_by_id))
+    missing_before_write = sorted(visible_id_set - set(rated_visible))
     updates: list[dict[str, str]] = []
     for job_id in rated_visible:
         source = dict(raw_by_id.get(job_id) or {})
@@ -348,25 +418,29 @@ def finalize(project: Path) -> tuple[int, dict[str, Any]]:
             output=view_out[:1200],
         )
 
-    missing = sorted(visible_id_set - set(rated_visible))
-    complete = not missing
+    partial = bool(missing_before_write)
     summary = _summary_payload(
         project,
-        status="ok" if complete else "partial",
-        reason="" if complete else "visible job rows missing ratings/scores",
+        status="partial" if partial else "ok",
+        reason=(
+            "validated current ratings were updated atomically; unresolved rows retain "
+            "their prior database scores and are listed as stale"
+            if partial else ""
+        ),
         score_jobs_output=score_out[:1200],
         upsert_output=upsert_out[:1200],
         view_output=view_out[:1200],
         ratings_rows=len(rating_by_id),
         scores_rows=len(score_by_id),
         fallback_ratings=fallback_ratings,
+        cleared_fallback_scores=cleared_fallback_scores,
         visible_rows=len(visible_ids),
         rated_visible_rows=len(rated_visible),
-        missing_visible_rows=len(missing),
-        missing_visible_examples=missing[:20],
+        missing_visible_rows=len(missing_before_write),
+        missing_visible_examples=missing_before_write[:20],
         updated_rows=len(updates),
     )
-    return (0 if complete else 2), summary
+    return (2 if partial else 0), summary
 
 
 def main(argv: list[str] | None = None) -> int:

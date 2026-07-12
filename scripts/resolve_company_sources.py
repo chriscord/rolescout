@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 from urllib.parse import quote_plus
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REGISTRY = ROOT / "references" / "search-source-registry.yaml"
 
@@ -84,6 +83,12 @@ def load_registered_registry(registry_path: Path | None = None) -> dict[str, dic
         nonlocal current
         if current and current.get("name"):
             entries.setdefault(normalized_name(str(current["name"])), current)
+            aliases = current.get("aliases") or []
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            for alias in aliases:
+                if str(alias).strip():
+                    entries.setdefault(normalized_name(str(alias)), current)
         current = None
 
     for raw in text.splitlines():
@@ -131,6 +136,17 @@ def load_self_hosted_registry(registry_path: Path | None = None) -> dict[str, di
 
 def _slug_guess(company: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", company.lower())
+
+
+def is_category_seed(company: str) -> bool:
+    """True for market/category descriptions that must not become ATS slugs."""
+    text = " ".join(str(company or "").lower().split())
+    plural_category = re.search(
+        r"\b(startups|scaleups|companies|employers|firms|organizations|organisations)\b",
+        text,
+    )
+    return bool(plural_category and (" or " in text or " and " in text or "," in text
+                                     or text.startswith(("ai ", "tech ", "fintech "))))
 
 
 def _registered_sources(company: str, entry: dict) -> list[dict]:
@@ -249,23 +265,34 @@ def _unknown_sources(company: str) -> list[dict]:
 def source_plan_for_company(company: str, registry_path: Path | None = None) -> dict:
     registry = load_registered_registry(registry_path)
     entry = registry.get(normalized_name(company))
-    if entry:
+    category_seed = is_category_seed(company)
+    if category_seed:
+        sources = [{
+            "type": "company_expansion_required",
+            "query": company,
+            "status": "planned",
+            "note": "category/market seed; expand to named employers before source resolution",
+        }]
+        notes = "category seed; skipped guessed ATS probes until expanded to named employers"
+    elif entry:
         sources = _registered_sources(company, entry)
         notes = ("registered official careers source; verify registry URLs first; "
                  "do not execute guessed ATS probes unless discovery proves no canonical source")
     else:
         sources = _unknown_sources(company)
         notes = "unknown source; discover official careers before ATS fallback probes"
-    sources.append({
-        "type": "LinkedIn Jobs",
-        "status": "planned",
-        "note": "mandatory lead-owned pass after non-login sources",
-    })
+    if not category_seed:
+        sources.append({
+            "type": "LinkedIn Jobs",
+            "status": "planned",
+            "note": "mandatory lead-owned pass after non-login sources",
+        })
     return {
         "name": company,
         "sources": sources,
         "fallbacks_used": [],
         "notes": notes,
+        "category_seed": category_seed,
     }
 
 

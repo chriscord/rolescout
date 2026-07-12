@@ -86,7 +86,12 @@ Unchanged principle, tightened: **every candidate seen at any source enters the 
 - **Direct posting URL gate (validator-enforced).** A `kept` candidate must carry a direct posting URL in `source_url` or `job_page_url` and a verified JD snapshot. Listing/search URLs (for example Google Careers `.../jobs/results?q=...`, Google Careers `.../jobs/results` without a posting id, or ServiceNow `/jobs/`) are query evidence only. The capture sequence is: enumerate listing/API/card results -> extract each posting's own href/id -> fetch/render the posting page -> canonicalize with `normalize_job_url.py` -> write `targets/jobs/<job_id>.json` with full JD text in `raw_text`, `jd_text`, `job_description`, `description`, `content`, `body_text`, or `html` -> then mark `kept`. If a role is interesting or user-forced but the direct posting URL/JD cannot be verified, log `pending_fallback` instead of persisting a placeholder row.
 - **Board-enumeration completeness (validator-enforced).** A `board_enumeration` query with `results_seen: N` obliges the log to account for ≥N entries for that company. In-family postings get per-candidate entries; clearly out-of-family blocks may be rolled up into a single bulk entry with a `count` and a collective reason (e.g. `{company: "<company>", title: "bulk: engineering/site-ops postings", decision: "skipped", reason: "off_focus", count: 180}`). Enumerating 77 and logging only 9 — as a live run once did for a seed company, silently dropping its Senior Manager roles — is the defect this check exists to catch.
 
-### Parallel capture with subagents (plan centrally, capture in parallel, merge centrally)
+### Legacy agent capture protocol (developer-only)
+
+The public runtime does not use this protocol: the Universe Manager consumes typed,
+proposal-only expansion results, `search` capture is deterministic, and `score` is typed. The material below is
+retained only for maintainers testing the explicitly enabled legacy LLM search
+lane; it is not the default runtime contract.
 
 Shard Phase 4 by company across a bounded parallel subagent pool instead of walking companies serially. The protocol keeps every auditability guarantee and prevents one company's source blocker from stopping the rest of the market map:
 
@@ -111,3 +116,21 @@ Before reporting to the user, the agent audits itself:
 - Prioritized follow-up search list ("what I would search next with more budget").
 
 The user-facing summary quotes this audit — never report "done" while the audit lists unexplained thin buckets.
+# Runtime phases
+
+The public runtime has four explicit responsibilities:
+
+1. The internal Universe Manager atomically materializes literal named employers from the
+   latest preference revision, so deterministic search can start immediately. It sends each
+   seed/descriptor to bounded proposal-only model workers; they cannot edit preferences or
+   shared artifacts. A single coordinator validates the revision and incrementally merges
+   accepted close peers and descriptor expansions into `targets/company-universe.json`.
+2. `search` deterministically captures and normalizes the currently materialized universe.
+   If expansion completes after an initial search, the manager queues a deterministic refresh
+   of the latest complete universe only. This deliberate re-enumeration keeps the
+   source plan, coverage audit, and lifecycle state coherent; store writes remain URL-keyed
+   upserts, never destructive replacement.
+3. `score` is a separate explicit command. It evaluates already captured jobs in compact
+   typed model batches, including every cached requirement atom and standing-policy evaluation.
+4. The score finalizer deterministically applies weights and requirement/policy caps,
+   validates, and persists.

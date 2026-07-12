@@ -198,10 +198,67 @@ self_hosted_careers:
       notes: "Server-rendered; YouTube / Google Cloud / DeepMind roles live under the same site."
     - name: Meta
       render: js                     # SPA — browser render, or mirror
-      careers_search_url: https://www.metacareers.com/jobs/
-      posting_url: https://www.metacareers.com/jobs/<id>       # also /profile/job_details/<id>
+      careers_search_url: https://www.metacareers.com/
+      posting_url: https://www.metacareers.com/profile/job_details/<id>/
+      alternate_detail_prefixes: ["https://www.metacareers.com/jobs/<id>/"]
       mirrors: ["https://metacareers.dejobs.org/", "search-engine indexing of metacareers.com/jobs/<id>"]
+      evidence_url: https://www.metacareers.com/profile/job_details/895276696939222/
       notes: "metacareers is JS-blocked to plain fetch; render with a browser, or capture title/location/family from the dejobs mirror + search excerpts and set posting_status per the live listing."
+    - name: Grab
+      render: server_html
+      source_kind: branded_smartrecruiters
+      careers_search_url: https://www.grab.careers/en/jobs/
+      posting_url: https://www.grab.careers/en/jobs/<id>/<slug>/
+      raw_ats_url: https://careers.smartrecruiters.com/Grab
+      evidence_url: https://www.grab.careers/en/jobs/744000135416399/manager-post-merger-integration-pmi-and-strategy/
+      notes: "The branded listing is official and server-readable; enumerate the SmartRecruiters API for complete structured locations, but retain grab.careers URLs when available."
+    - name: DBS
+      aliases: ["DBS Bank"]
+      render: server_html
+      source_kind: singapore_major_employer
+      careers_search_url: https://www.dbs.com/careers/default.page
+      evidence_url: https://www.dbs.com/careers/teams/singapore.page
+    - name: OCBC
+      aliases: ["OCBC Bank"]
+      render: server_html
+      source_kind: singapore_major_employer
+      careers_search_url: https://www.ocbc.com/group/careers/
+      evidence_url: https://www.ocbc.com/group/careers/
+    - name: UOB
+      aliases: ["United Overseas Bank"]
+      render: server_html
+      source_kind: singapore_major_employer
+      careers_search_url: https://careers.uobgroup.com/
+      evidence_url: https://careers.uobgroup.com/
+    - name: Sea
+      aliases: ["Sea Group"]
+      render: js
+      source_kind: singapore_major_employer
+      careers_search_url: https://www.sea.com/careers
+      evidence_url: https://www.sea.com/careers
+    - name: Shopee
+      render: js
+      source_kind: singapore_major_employer
+      careers_search_url: https://careers.shopee.sg/
+      evidence_url: https://careers.shopee.sg/
+    - name: Temasek
+      render: server_html
+      source_kind: singapore_major_employer
+      careers_search_url: https://jobs.temasek.com.sg/
+      evidence_url: https://jobs.temasek.com.sg/
+    - name: GIC
+      aliases: ["GIC Private Limited"]
+      render: server_html
+      source_kind: singapore_major_employer
+      careers_search_url: https://careers.gic.com.sg/
+      evidence_url: https://careers.gic.com.sg/
+    - name: GovTech Singapore
+      aliases: ["GovTech", "Government Technology Agency of Singapore"]
+      render: server_html
+      source_kind: singapore_public_service
+      careers_search_url: https://www.tech.gov.sg/careers/
+      raw_ats_url: https://www.careers.gov.sg/
+      evidence_url: https://www.tech.gov.sg/careers/
     - name: Amazon
       render: json_api
       careers_search_url: https://www.amazon.jobs/en/search

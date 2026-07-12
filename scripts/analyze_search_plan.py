@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 
+from resolve_company_sources import is_category_seed
 
 MIN_ARCHETYPE_PEERS = 2
 DEFAULT_ADJACENT_PER_SEED_SOFT_MAX = 3
@@ -232,6 +233,15 @@ def analyze(project: Path) -> dict:
             exception_norms.add(_norm(str(item)))
 
     for seed in declared:
+        if is_category_seed(seed):
+            expanded = {
+                str(item.get("input", "")).strip().lower()
+                for item in universe.get("expanded_descriptors", [])
+                if isinstance(item, dict)
+            }
+            if seed.strip().lower() not in expanded:
+                issues.append(f"category target '{seed}' has not been expanded into named employers.")
+            continue
         ns = _norm(seed)
         if ns not in universe_norms and ns not in excluded_norms:
             issues.append(

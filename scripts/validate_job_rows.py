@@ -15,6 +15,7 @@ import csv
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -36,8 +37,11 @@ def validate_row(row: dict, idx: int) -> list:
         errs.append(f"row {idx}: unknown columns {sorted(unknown)}")
     for f in ("captured_at", "last_seen_at"):
         v = str(row.get(f, "")).strip()
-        if v and not re.match(ISO_DATE_RE, v):
-            errs.append(f"row {idx}: {f}='{v}' is not YYYY-MM-DD")
+        if v:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                errs.append(f"row {idx}: {f}='{v}' is not a real YYYY-MM-DD date")
     for f in ("source_url", "job_page_url"):
         v = str(row.get(f, "")).strip()
         if v and not re.match(r"^https?://", v):

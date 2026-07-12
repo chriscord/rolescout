@@ -7,8 +7,9 @@ Usage:
 ratings JSON: [{"job_id": "...", "ratings": {"role_fit": 4, ...}, "rationale": {"role_fit": "..."}}, ...]
 Every criterion in the config must be rated (1-5 integers). Weights must sum to 100.
 
-Output: ranked table + strategy/job-scores.json with {job_id, score, suggested_priority,
-dealbreaker_hit}. A rating of 1 on any dealbreaker criterion forces priority "low".
+Output: ranked table + strategy/job-scores.json with {job_id, priority_score, suggested_priority,
+dealbreaker_hit}. A rating of 1 on any dealbreaker criterion caps priority_score below
+the medium threshold and therefore forces priority "low".
 Exit 1 on any validation error — fix inputs rather than hand-computing scores.
 """
 import argparse
@@ -67,6 +68,7 @@ def main() -> int:
         score = round(sum(criteria[k] * v for k, v in ratings.items()) / 5, 1)
         hit = sorted(k for k in dealbreakers if ratings.get(k) == 1)
         if hit:
+            score = min(score, float(thresholds["medium"]) - 1)
             prio = "low"
         elif score >= thresholds["high"]:
             prio = "high"
@@ -74,7 +76,7 @@ def main() -> int:
             prio = "medium"
         else:
             prio = "low"
-        results.append({"job_id": jid, "score": score, "suggested_priority": prio,
+        results.append({"job_id": jid, "priority_score": score, "suggested_priority": prio,
                         "dealbreaker_hit": hit})
 
     if errors:
@@ -83,16 +85,15 @@ def main() -> int:
             print(f"  - {e}")
         return 1
 
-    results.sort(key=lambda r: -r["score"])
+    results.sort(key=lambda r: -r["priority_score"])
     out = proj / "strategy" / "job-scores.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     width = max((len(r["job_id"]) for r in results), default=10)
-    print(f"{'job_id':<{width}}  score  priority  dealbreaker")
+    print(f"{'job_id':<{width}}  priority_score  priority")
     for r in results:
-        db = ",".join(r["dealbreaker_hit"]) or "-"
-        print(f"{r['job_id']:<{width}}  {r['score']:>5}  {r['suggested_priority']:<8}  {db}")
+        print(f"{r['job_id']:<{width}}  {r['priority_score']:>5}  {r['suggested_priority']:<8}")
     # Projects may live outside the repo (RECRUITING_PROJECT_DIR) — don't crash on that.
     try:
         shown = out.relative_to(ROOT)

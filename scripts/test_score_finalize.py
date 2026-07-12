@@ -12,11 +12,11 @@ import csv
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -34,6 +34,7 @@ class FakeCtx:
         self.pending_reasons = {}
         self.failure_class = ""
         self.artifacts_written = []
+        self.workflow = "test"
 
     def emit(self, kind: str, text: str, extra=None) -> None:
         del kind, text, extra
@@ -156,6 +157,50 @@ def main() -> int:
     if set(accepted) != {"job-1"} or missing != {"job-2"} or not issues:
         print("FAIL: score batch validation did not detect missing/unknown rows", file=sys.stderr)
         return 1
+    nested, nested_missing, nested_issues = workflows._validate_score_batch_ratings(
+        [{
+            "job_id": "job-1",
+            "ratings": {
+                "role_fit": {"score": 4, "rationale": "Strong role overlap."},
+                "location_remote": {"score": 5, "rationale": "Singapore role."},
+            },
+        }],
+        {"job-1"},
+        {"role_fit", "location_remote"},
+    )
+    if (
+        nested_missing
+        or nested_issues
+        or nested["job-1"]["ratings"] != {"location_remote": 5, "role_fit": 4}
+        or nested["job-1"]["rationale"]["role_fit"] != "Strong role overlap."
+    ):
+        print("FAIL: nested evaluator ratings were not normalized", file=sys.stderr)
+        return 1
+    rejected, rejected_missing, rejected_issues = workflows._validate_score_batch_ratings(
+        [{"job_id": "job-1", "ratings": {"role_fit": {"score": 7}}}],
+        {"job-1"},
+        {"role_fit"},
+    )
+    if rejected or rejected_missing != {"job-1"} or not rejected_issues:
+        print("FAIL: invalid nested evaluator rating was accepted", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="rolescout-score-snapshot-") as td:
+        snapshot_project = Path(td)
+        strategy = snapshot_project / "strategy"
+        strategy.mkdir()
+        (strategy / "job-ratings.json").write_text(
+            json.dumps([{"job_id": "stale", "ratings": {"role_fit": None}}]),
+            encoding="utf-8",
+        )
+        changed = workflows._merge_score_ratings(
+            snapshot_project,
+            [{"job_id": "current", "ratings": {"role_fit": 4}}],
+        )
+        saved = json.loads((strategy / "job-ratings.json").read_text(encoding="utf-8"))
+        if changed != 1 or [item["job_id"] for item in saved] != ["current"]:
+            print("FAIL: completed score ratings did not replace the stale snapshot", file=sys.stderr)
+            return 1
 
     with tempfile.TemporaryDirectory(prefix="rolescout-score-test-") as td:
         project = Path(td) / "projects" / "tester--score"
@@ -281,6 +326,19 @@ def main() -> int:
             project / "strategy" / "scoring-config.json",
         )
         _write_job_list(project / "data" / "job_list.csv")
+        initial_rows = list(csv.DictReader((project / "data" / "job_list.csv").open(
+            newline="", encoding="utf-8")))
+        initial_json = project / "data" / "initial-job-rows.json"
+        _write_json(initial_json, initial_rows)
+        init_before = _run([sys.executable, str(SCRIPTS / "init_db.py")], project)
+        if init_before.returncode != 0:
+            print(init_before.stdout + init_before.stderr, file=sys.stderr)
+            return 1
+        seed = _run([sys.executable, str(SCRIPTS / "upsert_rows.py"),
+                     "job_list", str(initial_json)], project)
+        if seed.returncode != 0:
+            print(seed.stdout + seed.stderr, file=sys.stderr)
+            return 1
         score_payload = {
             "schema": "rolescout-score-output-v1",
             "job_groups": [{
@@ -327,6 +385,39 @@ def main() -> int:
             print(view.stdout + view.stderr, file=sys.stderr)
             return 1
         final = _run([sys.executable, str(SCRIPTS / "finalize_score.py"), str(project)], project)
+        if final.returncode != 2:
+            print("FAIL: incomplete evaluator coverage must commit valid rows and remain partial", file=sys.stderr)
+            print(final.stdout + final.stderr, file=sys.stderr)
+            return 1
+        con = sqlite3.connect(project / "data" / "public-opportunities.db")
+        try:
+            partial_row = con.execute(
+                "SELECT fit_score FROM job_list WHERE job_id=?",
+                ("exampleco--lead-strategy-manager--1234abcd",),
+            ).fetchone()
+            unresolved_row = con.execute(
+                "SELECT fit_score FROM job_list WHERE job_id=?",
+                ("exampleco--operations-analyst--5678abcd",),
+            ).fetchone()
+        finally:
+            con.close()
+        if not partial_row or partial_row[0] != "4" or not unresolved_row or unresolved_row[0]:
+            print("FAIL: partial finalization did not update only the validated row", file=sys.stderr)
+            return 1
+        score_payload["job_ratings"].append({
+            "job_id": "exampleco--operations-analyst--5678abcd",
+            "job_group": "strategy-bd",
+            "ratings": {
+                "role_fit": 2, "comp_potential": 3, "company_quality": 4,
+                "location_remote": 5, "growth_path": 3, "likelihood": 3,
+                "network_access": 1, "interview_cost": 3, "timing": 5,
+            },
+            "rationale": {"role_fit": "Adjacent but below the target role family."},
+        })
+        workflows._materialize_score_output(FakeCtx(project), {
+            "events": [{"type": "result", "content": "SCORE_OUTPUT_JSON:\n" + json.dumps(score_payload)}],
+        })
+        final = _run([sys.executable, str(SCRIPTS / "finalize_score.py"), str(project)], project)
         if final.returncode != 0:
             print(final.stdout + final.stderr, file=sys.stderr)
             return 1
@@ -342,9 +433,14 @@ def main() -> int:
         if not first_score or first_score.get("suggested_priority") != "high":
             print(f"FAIL: expected high score for rated row: {scores}", file=sys.stderr)
             return 1
-        rows = list(csv.DictReader((project / "data" / "job_list.visible.csv").open(
-            newline="", encoding="utf-8"
-        )))
+        con = sqlite3.connect(project / "data" / "public-opportunities.db")
+        con.row_factory = sqlite3.Row
+        try:
+            rows = [dict(r) for r in con.execute(
+                "SELECT j.* FROM job_visibility v JOIN job_list j ON j.job_id=v.job_id "
+                "ORDER BY v.position")]
+        finally:
+            con.close()
         if len(rows) != 2:
             print(f"FAIL: expected two visible rows, got {len(rows)}", file=sys.stderr)
             return 1
@@ -355,12 +451,12 @@ def main() -> int:
         if row.get("job_group") != "strategy-bd":
             print(f"FAIL: job_group not finalized: {row}", file=sys.stderr)
             return 1
-        fallback = next(r for r in rows if r.get("job_id") == "exampleco--operations-analyst--5678abcd")
-        if fallback.get("fit_score") != "1" or fallback.get("priority") != "low":
-            print(f"FAIL: fallback row not parked low: {fallback}", file=sys.stderr)
+        second = next(r for r in rows if r.get("job_id") == "exampleco--operations-analyst--5678abcd")
+        if second.get("fit_score") != "2":
+            print(f"FAIL: second evaluator rating not finalized: {second}", file=sys.stderr)
             return 1
-        if fallback.get("job_group") != "parked" or "Deterministic fallback" not in fallback.get("notes", ""):
-            print(f"FAIL: fallback rationale not visible: {fallback}", file=sys.stderr)
+        if second.get("job_group") != "strategy-bd" or "Deterministic fallback" in second.get("notes", ""):
+            print(f"FAIL: deterministic fallback leaked into score output: {second}", file=sys.stderr)
             return 1
 
     print("PASS: score finalization self-test")

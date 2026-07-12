@@ -92,6 +92,12 @@ def _query_lines(queries: list[dict]) -> list[str]:
         detail = f"results_seen={seen}" if seen != "" else "results_seen=unknown"
         if observed:
             detail += f"; observed={observed}"
+        if "pages_fetched" in query:
+            detail += f"; pages={query.get('pages_fetched')}"
+        if query.get("advertised_total") is not None:
+            detail += f"; advertised_total={query.get('advertised_total')}"
+        if "pagination_complete" in query:
+            detail += f"; pagination_complete={query.get('pagination_complete')}"
         if q:
             detail += f"; q={q}"
         lines.append(f"- {label}: {detail}")

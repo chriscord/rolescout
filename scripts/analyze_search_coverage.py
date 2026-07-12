@@ -21,7 +21,6 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-
 UNRESOLVED_CAPTURE_MARKERS = (
     "outbound_dns_blocked",
     "dns_error",
@@ -200,6 +199,23 @@ def analyze(project: Path) -> dict:
         company = _norm(query.get("company", ""))
         if company:
             queries_by_company[company].append(query)
+        if query.get("scope") == "board_enumeration":
+            display = str(query.get("company") or "(unknown company)")
+            seen = query.get("results_seen")
+            total = query.get("advertised_total")
+            complete = query.get("pagination_complete")
+            if complete is False:
+                issues.append(
+                    f"{display}: listing pagination did not complete "
+                    f"(seen={seen}, advertised_total={total})"
+                )
+                add_retry(display)
+            elif isinstance(total, int) and isinstance(seen, int) and seen < total:
+                issues.append(
+                    f"{display}: listing enumeration is incomplete "
+                    f"({seen}/{total} postings seen)"
+                )
+                add_retry(display)
 
     kept_total = sum(counter.get("kept", 0) for counter in cand_counts.values())
     failed_total = sum(counter.get("failed_capture", 0) for counter in cand_counts.values())

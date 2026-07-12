@@ -25,6 +25,29 @@ Defined in `<project>/strategy/scoring-config.json` (weights sum to 100). Defaul
 
 Weighted score = Σ(weight × rating) / 5 → 0–100. Priority mapping: ≥ 70 high, 50–69 medium, < 50 low. A rating of 1 on `location_remote` or any user-declared dealbreaker forces priority `low` (or park) regardless of score.
 
+Before semantic ratings, the runner normalizes each JD into requirement atoms cached at
+`<project>/targets/requirements/<job_id>.json`. Each atom records category, obligation
+(`minimum_required`, `required`, `preferred`, or `responsibility`), and importance
+(`central`, `supporting`, or `eligibility`). The model must evaluate every injected atom
+against the capability ledger and evidence map, separating direct tenure from adjacent
+exposure. Deterministic post-processing caps both `role_fit` and `likelihood` at 2 when a
+central minimum or eligibility atom is unmet, and at 3 when it is unknown. Preferred atoms
+can distinguish otherwise similar jobs but never trigger a hard minimum cap.
+
+All explicit minimum/required atoms are retained; there is no fixed eight-item truncation.
+The runner batches by total requirement count, asks the model only for semantic criteria,
+and derives `minimum_requirement` and `essential_qualification` itself. A failed row is
+repaired alone with exact expected IDs. Valid current rows commit atomically while unresolved
+rows retain their previous database score and are recorded as stale. Dependency fingerprints
+over the JD, profile/evidence ledger, policy, criteria, and contract allow later runs to
+evaluate only new or changed rows.
+
+Each completed batch is durably checkpointed by the single runner coordinator in
+`<project>/strategy/score-staging.db`. Validated payloads and validation failures are written
+in one SQLite transaction. A compatible rerun resumes those rows instead of calling the
+model again. The canonical `job-ratings.json` and job store are promoted only after the run
+has exhausted initial batches and one-row repairs.
+
 ## Workflow
 
 1. Read `<project>/strategy/scoring-config.json`. If missing, seed it from `references/scoring-config.default.json` (new_project.py does this automatically) and **show the user the criteria/weights, inviting adds/removes/reweights** — the model belongs to the user; these defaults are just a starting proposal.

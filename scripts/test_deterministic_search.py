@@ -23,10 +23,10 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from rolescout.runner.workflows import run_workflow
-from rolescout import core
-from rolescout.search.deterministic import _infer_location_from_jd
 import build_search_view
+from rolescout import core, project_meta
+from rolescout.runner.workflows import run_workflow
+from rolescout.search.deterministic import _company_set_fingerprint, _infer_location_from_jd
 
 
 JD = """
@@ -253,6 +253,7 @@ def main() -> int:
             _write(project / "targets" / "company-universe.json", {
                 "generated_at": "2026-07-10",
                 "project": project.name,
+                "preference_fingerprint": project_meta.preference_fingerprint(project),
                 "buckets": [{
                     "bucket": "fixture",
                     "why_relevant": "fixture",
@@ -267,6 +268,7 @@ def main() -> int:
             _write(project / "targets" / "source-plan.json", {
                 "generated_at": "2026-07-10",
                 "project": project.name,
+                "company_set_fingerprint": _company_set_fingerprint([{"name": "ExampleCo"}]),
                 "companies": [{
                     "name": "ExampleCo",
                     "sources": [{
@@ -308,9 +310,14 @@ def main() -> int:
             if view_summary.get("visible_rows") != 1:
                 print(f"FAIL: expected 1 visible row, got {view_summary}", file=sys.stderr)
                 return 1
-            job_list = project / "data" / "job_list.csv"
-            if not job_list.exists() or "Lead Strategy Manager" not in job_list.read_text(encoding="utf-8"):
-                print("FAIL: job_list.csv missing persisted row", file=sys.stderr)
+            import sqlite3
+            con = sqlite3.connect(project / "data" / "public-opportunities.db")
+            try:
+                persisted = con.execute("SELECT title FROM job_list").fetchall()
+            finally:
+                con.close()
+            if ("Lead Strategy Manager",) not in persisted:
+                print("FAIL: public opportunities store missing persisted row", file=sys.stderr)
                 return 1
             snapshots = list((project / "targets" / "jobs").glob("*.json"))
             if len(snapshots) != 1:

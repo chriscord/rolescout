@@ -34,19 +34,19 @@ Checks ONLY mechanics — never which companies should have been searched:
      only — never asserts which companies belong.
 Exit 1 on any FAIL. Warnings don't fail.
 """
-import csv
 import json
 import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-sys.path.insert(0, str(Path(__file__).parent))
-from job_url_policy import row_has_direct_posting_url, unverified_jd_placeholder
-import store_io
+from resolve_company_sources import is_category_seed
 
+sys.path.insert(0, str(Path(__file__).parent))
+import store_io
+from job_url_policy import row_has_direct_posting_url, unverified_jd_placeholder
 from schema_defs import RESEARCH_DECISIONS as VALID_DECISIONS
-from schema_defs import RESEARCH_REASON_CODES as VALID_REASONS
+
 VALID_SOURCE_STATUS = {
     "planned", "ok", "blocked", "empty", "failed",
     "running", "scanned", "no_match", "blocked_auth", "blocked_tooling",
@@ -221,6 +221,15 @@ def main() -> int:
         universe_names = {norm(c.get("name", "")) for c in companies}
         excluded_names = {norm(str(e.get("name_or_bucket", ""))) for e in universe.get("excluded", [])}
         for s in seeds_declared:
+            if is_category_seed(str(s)):
+                expanded = {
+                    str(item.get("input", "")).strip().lower()
+                    for item in universe.get("expanded_descriptors", [])
+                    if isinstance(item, dict)
+                }
+                if str(s).strip().lower() not in expanded:
+                    fails.append(f"category target '{s}' was not expanded into named employers")
+                continue
             ns = norm(s)
             if ns in universe_names:
                 continue
@@ -295,11 +304,8 @@ def main() -> int:
         cands += run.get("candidates", [])
         queries += run.get("queries", [])
 
-    job_ids = set()
-    jl = proj / "data" / "job_list.csv"
-    if jl.exists():
-        with open(jl, newline="", encoding="utf-8") as f:
-            job_ids = {r["job_id"] for r in csv.DictReader(f)}
+    job_ids = {str(row.get("job_id", ""))
+               for row in store_io.read_project_rows(proj, "job_list")}
 
     audit_text_early = paths["coverage-audit.md"].read_text(encoding="utf-8").lower()
     run_interrupted = ("approval_required" in audit_text_early.replace(" ", "_")
@@ -491,6 +497,17 @@ def main() -> int:
                          "and matches no universe company — completeness not checkable")
             continue
         seen_n = q.get("results_seen")
+        advertised = q.get("advertised_total")
+        if q.get("pagination_complete") is False:
+            fails.append(
+                f"board_enumeration '{universe_norms.get(qn, qn)}': pagination incomplete "
+                f"(results_seen={seen_n}, advertised_total={advertised})"
+            )
+        elif isinstance(advertised, int) and isinstance(seen_n, int) and seen_n < advertised:
+            fails.append(
+                f"board_enumeration '{universe_norms.get(qn, qn)}': only "
+                f"{seen_n}/{advertised} advertised postings were enumerated"
+            )
         if not isinstance(seen_n, int) or seen_n <= 0:
             continue
         acc = _accounted(qn)

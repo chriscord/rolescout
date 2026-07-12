@@ -114,23 +114,7 @@ def persist(rows_path: Path, project: Path, keep: bool = False) -> int:
         encoding="utf-8",
     )
 
-    validate_cmd = [
-        sys.executable,
-        str(ROOT / "scripts" / "validate_job_rows.py"),
-        str(normalized_path),
-    ]
-    existing = data_dir / "job_list.csv"
-    if existing.exists():
-        validate_cmd += ["--existing", str(existing)]
-    validate = _run(validate_cmd, project)
-    print(validate.stdout, end="")
-    if validate.stderr:
-        print(validate.stderr, end="", file=sys.stderr)
-    if validate.returncode != 0:
-        if not keep:
-            normalized_path.unlink(missing_ok=True)
-        return validate.returncode
-
+    # upsert_rows owns validation against a transaction-consistent SQLite snapshot.
     upsert = _run([
         sys.executable,
         str(ROOT / "scripts" / "upsert_rows.py"),

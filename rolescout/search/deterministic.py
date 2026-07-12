@@ -9,7 +9,7 @@ the slow crawl/parse work out of LLM agents.
 from __future__ import annotations
 
 import concurrent.futures
-import html
+import hashlib
 import http.client
 import json
 import os
@@ -39,6 +39,8 @@ jd_text_cleaner = core.load("jd_text_cleaner")
 
 DEFAULT_TIMEOUT_S = 12
 MAX_RESPONSE_BYTES = 25_000_000
+MAX_PROVIDER_ENUMERATION = 2_000
+MAX_LISTING_PAGES = 100
 MIN_JD_TEXT_CHARS = 200
 JD_TEXT_CAP = 12_000
 DEFAULT_CANDIDATES_PER_SOURCE = 120
@@ -204,6 +206,12 @@ def _norm_key(value: str) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
+def _company_set_fingerprint(companies: list[dict[str, Any]]) -> str:
+    names = sorted({_norm_key(item.get("name", "")) for item in companies
+                    if _norm_key(item.get("name", ""))})
+    return hashlib.sha256(json.dumps(names, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _slug(value: str, fallback: str = "item") -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
     return slug[:60].strip("-") or fallback
@@ -317,6 +325,7 @@ class _LinkExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.links: list[dict[str, str]] = []
         self._href = ""
+        self._attrs: dict[str, str] = {}
         self._text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -324,6 +333,7 @@ class _LinkExtractor(HTMLParser):
             return
         attrs_dict = {k.lower(): v or "" for k, v in attrs}
         self._href = attrs_dict.get("href", "")
+        self._attrs = attrs_dict
         self._text = []
 
     def handle_data(self, data: str) -> None:
@@ -333,8 +343,9 @@ class _LinkExtractor(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() == "a" and self._href:
             text = _norm(" ".join(self._text))
-            self.links.append({"href": self._href, "text": text})
+            self.links.append({"href": self._href, "text": text, **self._attrs})
             self._href = ""
+            self._attrs = {}
             self._text = []
 
 
@@ -474,6 +485,11 @@ class DiscoveryResult:
     error: str = ""
     method: str = ""
     elapsed_s: float = 0.0
+    authoritative: bool = False
+    listing_urls: list[str] = field(default_factory=list)
+    pages_fetched: int = 1
+    advertised_total: int | None = None
+    pagination_complete: bool = True
 
 
 @dataclass
@@ -583,6 +599,93 @@ class ProviderAdapter:
         raise NotImplementedError
 
 
+def _advertised_listing_total(text: str) -> int | None:
+    searchable = re.sub(r"<[^>]+>", " ", str(text or ""))
+    matches = re.findall(
+        r"\b([\d,]+)\s+(?:jobs?|positions?|openings?)\s+matched\b", searchable, re.I
+    )
+    if not matches:
+        matches = re.findall(
+            r"\b([\d,]+)\s+(?:jobs?|positions?|openings?)\b", searchable, re.I
+        )
+    values = [int(value.replace(",", "")) for value in matches]
+    return max(values) if values else None
+
+
+def _numbered_page_url(url: str, page: int) -> str:
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    query = [(key, value) for key, value in query if key.lower() not in {"page", "p"}]
+    query.append(("page", str(page)))
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(query), "")
+    )
+
+
+def _explicit_next_url(parser: _LinkExtractor, base_url: str) -> str:
+    for link in parser.links:
+        text = _norm(link.get("text", "")).lower()
+        rel = str(link.get("rel", "")).lower()
+        aria = str(link.get("aria-label", "")).lower()
+        if "next" in rel.split() or text in {"next", "next page", "›", ">", "→"} or "next" in aria:
+            return urllib.parse.urljoin(base_url, link.get("href", ""))
+    return ""
+
+
+def _prioritize_provider_candidates(
+    candidates: list[ProviderCandidate], intent: SearchIntent
+) -> list[ProviderCandidate]:
+    if not intent.role_terms:
+        return candidates
+    matched = [candidate for candidate in candidates if any(
+        term in candidate.title.lower() for term in intent.role_terms
+    )]
+    matched_ids = {id(candidate) for candidate in matched}
+    return matched + [candidate for candidate in candidates if id(candidate) not in matched_ids]
+
+
+def _job_location_match(location: str, remote_policy: str, intent: SearchIntent) -> bool:
+    if not intent.location_terms:
+        return True
+    normalized = location_normalize.normalize_location_value(location).lower()
+    if normalized:
+        return any(term in normalized for term in intent.location_terms)
+    return remote_policy == "remote"
+
+
+def _prepare_structured_jobs(
+    jobs: list[dict[str, Any]],
+    intent: SearchIntent,
+    *,
+    location_getter,
+    title_getter,
+    remote_getter=None,
+) -> list[dict[str, Any]]:
+    """Location-filter and role-prioritize a complete structured provider list.
+
+    Definite location mismatches are removed before the runtime candidate cap.
+    Missing-location rows remain as a bounded JD-fallback lane. Title matches are
+    ordered first so a large global board cannot crowd out relevant roles.
+    """
+    matched_location: list[dict[str, Any]] = []
+    unknown_location: list[dict[str, Any]] = []
+    for job in jobs:
+        location = _norm(location_getter(job))
+        remote = remote_getter(job) if remote_getter else _remote_policy(_json_text(job))
+        if location:
+            if _job_location_match(location, remote, intent):
+                matched_location.append(job)
+        else:
+            unknown_location.append(job)
+    scoped = matched_location + unknown_location if intent.location_terms else list(jobs)
+    if not intent.role_terms:
+        return scoped
+    title_matches = [job for job in scoped if any(
+        term in _norm(title_getter(job)).lower() for term in intent.role_terms)]
+    title_ids = {id(job) for job in title_matches}
+    return title_matches + [job for job in scoped if id(job) not in title_ids]
+
+
 class GreenhouseAdapter(ProviderAdapter):
     provider = "greenhouse"
 
@@ -606,10 +709,16 @@ class GreenhouseAdapter(ProviderAdapter):
         api = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
         payload = client.get_json(api)
         jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
+        jobs = [job for job in jobs if isinstance(job, dict)]
+        listing_urls = [str(job.get("absolute_url") or "").strip() for job in jobs]
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: _field(job, "location", "name") or "",
+            title_getter=lambda job: job.get("title", ""),
+        )
         candidates = []
-        for job in jobs[:_candidate_limit(task)]:
-            if not isinstance(job, dict):
-                continue
+        limit = _candidate_limit(task)
+        for job in scoped_jobs[:limit]:
             loc = _field(job, "location", "name") or ""
             url = str(job.get("absolute_url") or "").strip()
             candidates.append(ProviderCandidate(
@@ -623,7 +732,8 @@ class GreenhouseAdapter(ProviderAdapter):
                 raw=job,
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api)
+                               "scanned", candidates, method=api,
+                               authoritative=True, listing_urls=listing_urls)
 
 
 class LeverAdapter(ProviderAdapter):
@@ -642,10 +752,19 @@ class LeverAdapter(ProviderAdapter):
         jobs = client.get_json(api)
         if not isinstance(jobs, list):
             jobs = []
+        jobs = [job for job in jobs if isinstance(job, dict)]
+        listing_urls = [str(job.get("hostedUrl") or job.get("applyUrl") or "")
+                        for job in jobs]
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: (
+                job.get("categories", {}).get("location", "")
+                if isinstance(job.get("categories"), dict) else ""),
+            title_getter=lambda job: job.get("text", ""),
+        )
         candidates = []
-        for job in jobs[:_candidate_limit(task)]:
-            if not isinstance(job, dict):
-                continue
+        limit = _candidate_limit(task)
+        for job in scoped_jobs[:limit]:
             cats = job.get("categories") if isinstance(job.get("categories"), dict) else {}
             location = _norm(cats.get("location", ""))
             candidates.append(ProviderCandidate(
@@ -660,7 +779,8 @@ class LeverAdapter(ProviderAdapter):
                 raw=job,
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api)
+                               "scanned", candidates, method=api,
+                               authoritative=True, listing_urls=listing_urls)
 
 
 class AshbyAdapter(ProviderAdapter):
@@ -679,14 +799,24 @@ class AshbyAdapter(ProviderAdapter):
         api = f"https://api.ashbyhq.com/posting-api/job-board/{org}"
         payload = client.get_json(api)
         jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
-        candidates = []
-        for job in jobs[:_candidate_limit(task)]:
-            if not isinstance(job, dict):
-                continue
+        jobs = [job for job in jobs if isinstance(job, dict)]
+
+        def ashby_url(job: dict[str, Any]) -> str:
             job_id = str(job.get("id") or job.get("jobId") or "")
-            url = str(job.get("jobUrl") or job.get("url") or "").strip()
-            if not url and job_id:
-                url = f"https://jobs.ashbyhq.com/{org}/{job_id}"
+            return str(job.get("jobUrl") or job.get("url") or
+                       (f"https://jobs.ashbyhq.com/{org}/{job_id}" if job_id else ""))
+
+        listing_urls = [ashby_url(job) for job in jobs]
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: job.get("locationName") or job.get("location") or "",
+            title_getter=lambda job: job.get("title", ""),
+        )
+        candidates = []
+        limit = _candidate_limit(task)
+        for job in scoped_jobs[:limit]:
+            job_id = str(job.get("id") or job.get("jobId") or "")
+            url = ashby_url(job)
             candidates.append(ProviderCandidate(
                 company=task["company"],
                 title=_norm(job.get("title", "")),
@@ -699,7 +829,8 @@ class AshbyAdapter(ProviderAdapter):
                 raw=job,
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api)
+                               "scanned", candidates, method=api,
+                               authoritative=True, listing_urls=listing_urls)
 
 
 class SmartRecruitersAdapter(ProviderAdapter):
@@ -714,12 +845,45 @@ class SmartRecruitersAdapter(ProviderAdapter):
         bits = [p for p in urllib.parse.urlsplit(task["url"]).path.split("/") if p]
         company_token = bits[0] if bits else re.sub(r"[^A-Za-z0-9]", "", task["company"])
         api = f"https://api.smartrecruiters.com/v1/companies/{company_token}/postings"
-        payload = client.get_json(api)
-        jobs = payload.get("content", []) if isinstance(payload, dict) else []
+        jobs: list[dict[str, Any]] = []
+        offset = 0
+        page_size = 100
+        pages_fetched = 0
+        advertised_total: int | None = None
+        while offset < MAX_PROVIDER_ENUMERATION:
+            page_url = api + "?" + urllib.parse.urlencode({"limit": page_size, "offset": offset})
+            payload = client.get_json(page_url)
+            pages_fetched += 1
+            batch = payload.get("content", []) if isinstance(payload, dict) else []
+            batch = [job for job in batch if isinstance(job, dict)]
+            jobs.extend(batch)
+            total = int(payload.get("totalFound", 0) or 0) if isinstance(payload, dict) else 0
+            if total:
+                advertised_total = total
+            if not batch or len(batch) < page_size or (total and len(jobs) >= total):
+                break
+            offset += len(batch)
+        listing_urls: list[str] = []
+        for job in jobs:
+            job_id = str(job.get("id") or "")
+            title = _norm(job.get("name", ""))
+            if _norm_key(task["company"]) == "grab" and job_id:
+                listing_urls.append(
+                    f"https://www.grab.careers/en/jobs/{job_id}/{_slug(title)}/")
+            else:
+                listing_urls.append(str(job.get("ref") or
+                                        (f"https://jobs.smartrecruiters.com/{company_token}/{job_id}"
+                                         if job_id else "")))
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: (
+                (job.get("location") or {}).get("city")
+                or (job.get("location") or {}).get("country")
+                if isinstance(job.get("location"), dict) else ""),
+            title_getter=lambda job: job.get("name", ""),
+        )
         candidates = []
-        for job in jobs[:_candidate_limit(task)]:
-            if not isinstance(job, dict):
-                continue
+        for job in scoped_jobs[:_candidate_limit(task)]:
             job_id = str(job.get("id") or "")
             detail = {}
             if job_id:
@@ -731,9 +895,12 @@ class SmartRecruitersAdapter(ProviderAdapter):
                 except (FetchError, json.JSONDecodeError):
                     detail = {}
             loc = job.get("location") if isinstance(job.get("location"), dict) else {}
-            url = str(job.get("ref") or "")
-            if not url and job_id:
-                url = f"https://jobs.smartrecruiters.com/{company_token}/{job_id}"
+            if _norm_key(task["company"]) == "grab" and job_id:
+                url = f"https://www.grab.careers/en/jobs/{job_id}/{_slug(job.get('name', ''))}/"
+            else:
+                url = str(job.get("ref") or "")
+                if not url and job_id:
+                    url = f"https://jobs.smartrecruiters.com/{company_token}/{job_id}"
             desc = _json_text(detail.get("jobAd", {}).get("sections", {})) if isinstance(detail, dict) else ""
             candidates.append(ProviderCandidate(
                 company=task["company"],
@@ -746,8 +913,13 @@ class SmartRecruitersAdapter(ProviderAdapter):
                 description=desc,
                 raw={"summary": job, "detail": detail},
             ))
+        pagination_complete = advertised_total is None or len(jobs) >= advertised_total
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api)
+                               "scanned", candidates, method=api,
+                               authoritative=pagination_complete, listing_urls=listing_urls,
+                               pages_fetched=pages_fetched,
+                               advertised_total=advertised_total,
+                               pagination_complete=pagination_complete)
 
 
 class WorkdayAdapter(ProviderAdapter):
@@ -772,20 +944,34 @@ class WorkdayAdapter(ProviderAdapter):
         parts = urllib.parse.urlsplit(task["url"])
         api = f"https://{parts.netloc}/wday/cxs/{tenant}/{site}/jobs"
         jobs: list[dict[str, Any]] = []
-        for offset in range(0, _candidate_limit(task), 20):
+        complete = False
+        pages_fetched = 0
+        for offset in range(0, MAX_PROVIDER_ENUMERATION, 20):
             payload = client.post_json(
                 api,
                 {"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": ""},
             )
+            pages_fetched += 1
             batch = payload.get("jobPostings", []) if isinstance(payload, dict) else []
             if not batch:
+                complete = True
                 break
             jobs.extend(j for j in batch if isinstance(j, dict))
             if len(batch) < 20:
+                complete = True
                 break
-        candidates = []
+        listing_urls: list[str] = []
         base = f"https://{parts.netloc}/{site}"
-        for job in jobs[:_candidate_limit(task)]:
+        for job in jobs:
+            external = str(job.get("externalPath") or job.get("bulletFields", [""])[0] or "")
+            listing_urls.append(urllib.parse.urljoin(base + "/", external.lstrip("/")))
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: job.get("locationsText") or " ".join(job.get("locations", [])),
+            title_getter=lambda job: job.get("title", ""),
+        )
+        candidates = []
+        for job in scoped_jobs[:_candidate_limit(task)]:
             external = str(job.get("externalPath") or job.get("bulletFields", [""])[0] or "")
             url = urllib.parse.urljoin(base + "/", external.lstrip("/"))
             candidates.append(ProviderCandidate(
@@ -800,7 +986,9 @@ class WorkdayAdapter(ProviderAdapter):
                 raw=job,
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api)
+                               "scanned", candidates, method=api, authoritative=complete,
+                               listing_urls=listing_urls, pages_fetched=pages_fetched,
+                               pagination_complete=complete)
 
 
 class PersonioAdapter(ProviderAdapter):
@@ -817,7 +1005,26 @@ class PersonioAdapter(ProviderAdapter):
         text = client.get_text(feed)
         root = ET.fromstring(text)
         candidates = []
-        for pos in root.findall(".//position")[:_candidate_limit(task)]:
+        positions = root.findall(".//position")
+        limit = _candidate_limit(task)
+        scoped_positions = list(positions)
+        if intent.location_terms:
+            def position_location(pos: ET.Element) -> str:
+                office = pos.find("office")
+                location = pos.find("location")
+                node = office if office is not None else location
+                return _norm(node.text if node is not None else "")
+
+            scoped_positions = [
+                pos for pos in positions
+                if _job_location_match(position_location(pos), "unknown", intent)
+            ]
+        listing_urls: list[str] = []
+        for pos in positions:
+            url_node = pos.find("job_url")
+            if url_node is not None and url_node.text:
+                listing_urls.append(_norm(url_node.text))
+        for pos in scoped_positions[:limit]:
             def find_text(name: str) -> str:
                 node = pos.find(name)
                 return _norm(node.text if node is not None else "")
@@ -837,7 +1044,8 @@ class PersonioAdapter(ProviderAdapter):
                 provider_job_id=job_id, description=desc, raw={"xml_id": job_id},
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=feed)
+                               "scanned", candidates, method=feed,
+                               authoritative=True, listing_urls=listing_urls)
 
 
 class RecruiteeAdapter(ProviderAdapter):
@@ -852,10 +1060,18 @@ class RecruiteeAdapter(ProviderAdapter):
         api = urllib.parse.urlunsplit((parts.scheme or "https", parts.netloc, "/api/offers/", "", ""))
         payload = client.get_json(api)
         jobs = payload.get("offers", payload if isinstance(payload, list) else [])
+        jobs = [job for job in jobs if isinstance(job, dict)] if isinstance(jobs, list) else []
+        listing_urls = [str(job.get("careers_url") or job.get("url") or "") for job in jobs]
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: "; ".join(
+                _norm(loc.get("name", "")) for loc in job.get("locations", [])
+                if isinstance(loc, dict)),
+            title_getter=lambda job: job.get("title", ""),
+        )
         candidates = []
-        for job in jobs[:_candidate_limit(task)] if isinstance(jobs, list) else []:
-            if not isinstance(job, dict):
-                continue
+        limit = _candidate_limit(task)
+        for job in scoped_jobs[:limit]:
             locs = job.get("locations") if isinstance(job.get("locations"), list) else []
             loc = "; ".join(_norm(loc.get("name", "")) for loc in locs if isinstance(loc, dict))
             candidates.append(ProviderCandidate(
@@ -870,7 +1086,8 @@ class RecruiteeAdapter(ProviderAdapter):
                 raw=job,
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api)
+                               "scanned", candidates, method=api,
+                               authoritative=True, listing_urls=listing_urls)
 
 
 class TeamtailorAdapter(ProviderAdapter):
@@ -886,7 +1103,7 @@ class TeamtailorAdapter(ProviderAdapter):
         text = client.get_text(feed)
         root = ET.fromstring(text)
         candidates = []
-        for item in root.findall(".//item")[:_candidate_limit(task)]:
+        for item in root.findall(".//item"):
             def find_text(name: str) -> str:
                 node = item.find(name)
                 return _norm(node.text if node is not None else "")
@@ -899,8 +1116,12 @@ class TeamtailorAdapter(ProviderAdapter):
                 provider_job_id=url.rsplit("/", 1)[-1], description=desc,
                 raw={"rss_link": url},
             ))
+        listing_urls = [candidate.url for candidate in candidates]
+        candidates = _prioritize_provider_candidates(candidates, intent)[:_candidate_limit(task)]
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=feed)
+                               "scanned", candidates, method=feed,
+                               authoritative=True, listing_urls=listing_urls,
+                               advertised_total=len(listing_urls), pagination_complete=True)
 
 
 class ICIMSAdapter(ProviderAdapter):
@@ -914,14 +1135,36 @@ class ICIMSAdapter(ProviderAdapter):
                  intent: SearchIntent) -> DiscoveryResult:
         parts = urllib.parse.urlsplit(task["url"])
         api_path = "/api/jobs"
-        payload = client.get_json(urllib.parse.urlunsplit(
-            (parts.scheme or "https", parts.netloc, api_path, "page=1", "")
-        ))
-        jobs = payload.get("jobs", payload.get("data", [])) if isinstance(payload, dict) else []
+        jobs: list[dict[str, Any]] = []
+        pages_fetched = 0
+        advertised_total: int | None = None
+        complete = False
+        for page in range(1, MAX_LISTING_PAGES + 1):
+            payload = client.get_json(urllib.parse.urlunsplit(
+                (parts.scheme or "https", parts.netloc, api_path, f"page={page}", "")
+            ))
+            batch = payload.get("jobs", payload.get("data", [])) if isinstance(payload, dict) else []
+            batch = [job for job in batch if isinstance(job, dict)] if isinstance(batch, list) else []
+            pages_fetched += 1
+            jobs.extend(batch)
+            if isinstance(payload, dict):
+                raw_total = payload.get("total") or payload.get("totalCount") or payload.get("count")
+                if isinstance(raw_total, int):
+                    advertised_total = raw_total
+            if not batch or (advertised_total is not None and len(jobs) >= advertised_total):
+                complete = True
+                break
+        listing_urls = [
+            str(job.get("url") or job.get("canonicalUrl") or job.get("applyUrl") or "")
+            for job in jobs
+        ]
+        scoped_jobs = _prepare_structured_jobs(
+            jobs, intent,
+            location_getter=lambda job: job.get("location") or job.get("city") or "",
+            title_getter=lambda job: job.get("title") or job.get("name") or "",
+        )
         candidates = []
-        for job in jobs[:_candidate_limit(task)] if isinstance(jobs, list) else []:
-            if not isinstance(job, dict):
-                continue
+        for job in scoped_jobs[:_candidate_limit(task)]:
             url = str(job.get("url") or job.get("canonicalUrl") or job.get("applyUrl") or "")
             if url and url.startswith("/"):
                 url = urllib.parse.urljoin(task["url"], url)
@@ -937,7 +1180,171 @@ class ICIMSAdapter(ProviderAdapter):
                 raw=job,
             ))
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method=api_path)
+                               "scanned", candidates, method=api_path,
+                               authoritative=complete, listing_urls=listing_urls,
+                               pages_fetched=pages_fetched,
+                               advertised_total=advertised_total,
+                               pagination_complete=complete)
+
+
+class GoogleCareersAdapter(ProviderAdapter):
+    provider = "google_careers"
+
+    def can_handle(self, url: str, source: dict[str, Any]) -> bool:
+        parts = urllib.parse.urlsplit(url)
+        return (
+            parts.netloc.lower() == "www.google.com"
+            and "/about/careers/applications/jobs/results" in parts.path
+            and "<" not in url
+        )
+
+    def discover(self, task: dict[str, Any], client: HttpClient,
+                 intent: SearchIntent) -> DiscoveryResult:
+        all_candidates: list[ProviderCandidate] = []
+        listing_urls: list[str] = []
+        seen: set[str] = set()
+        advertised_total: int | None = None
+        pages_fetched = 0
+        complete = False
+        for page in range(1, MAX_LISTING_PAGES + 1):
+            page_url = _numbered_page_url(task["url"], page)
+            text = client.get_text(page_url)
+            pages_fetched += 1
+            page_total = _advertised_listing_total(text)
+            if page_total is not None:
+                advertised_total = max(advertised_total or 0, page_total)
+            parser = _LinkExtractor()
+            parser.feed(text)
+            new_on_page = 0
+            for link in parser.links:
+                href = _clean_candidate_href(urllib.parse.urljoin(page_url, link["href"]))
+                if href in seen or not _looks_job_link(href, link.get("text", "")):
+                    continue
+                if "/about/careers/applications/jobs/results/" not in urllib.parse.urlsplit(href).path:
+                    continue
+                seen.add(href)
+                new_on_page += 1
+                listing_urls.append(href)
+                title = _norm(link.get("text", "")) or _title_from_url(href)
+                all_candidates.append(ProviderCandidate(
+                    company=task["company"], title=title, url=href,
+                    location="; ".join(intent.target_locations),
+                    remote_policy="unknown", provider=self.provider,
+                    provider_job_id=urllib.parse.urlsplit(href).path.rstrip("/").split("/")[-1],
+                    raw={"anchor_text": title, "listing_page": page},
+                ))
+            if advertised_total is not None and len(seen) >= advertised_total:
+                complete = True
+                break
+            if new_on_page == 0:
+                complete = advertised_total is None or len(seen) >= advertised_total
+                break
+            if advertised_total is None and new_on_page < 20:
+                complete = True
+                break
+        scoped = _prioritize_provider_candidates(all_candidates, intent)
+        candidates = scoped[:_candidate_limit(task)]
+        return DiscoveryResult(
+            task["id"], self.provider, task["company"], task["url"],
+            "scanned", candidates, method="google_careers_paginated_html",
+            authoritative=complete, listing_urls=listing_urls,
+            pages_fetched=pages_fetched, advertised_total=advertised_total,
+            pagination_complete=complete,
+        )
+
+
+class MetaCareersAdapter(ProviderAdapter):
+    """Enumerate Meta's official DE Jobs mirror through its structured API."""
+
+    provider = "meta_careers"
+    API = "https://prod-search-api.jobsyn.org/api/v1/solr/search"
+    MIRROR = "https://metacareers.dejobs.org"
+
+    def can_handle(self, url: str, source: dict[str, Any]) -> bool:
+        host = urllib.parse.urlsplit(url).netloc.lower()
+        return host in {"www.metacareers.com", "metacareers.com", "metacareers.dejobs.org"}
+
+    def discover(self, task: dict[str, Any], client: HttpClient,
+                 intent: SearchIntent) -> DiscoveryResult:
+        locations = intent.target_locations or [""]
+        jobs_by_guid: dict[str, dict[str, Any]] = {}
+        pages_fetched = 0
+        advertised_total = 0
+        complete = True
+        for location in locations:
+            location_complete = False
+            for page in range(1, MAX_LISTING_PAGES + 1):
+                params = {"page": str(page)}
+                if location:
+                    params["location"] = location
+                url = self.API + "?" + urllib.parse.urlencode(params)
+                text, _ = client.request(
+                    url,
+                    headers={
+                        "Accept": "application/json",
+                        "X-Origin": "metacareers.dejobs.org",
+                    },
+                )
+                payload = json.loads(text)
+                batch = payload.get("jobs", []) if isinstance(payload, dict) else []
+                batch = [job for job in batch if isinstance(job, dict)]
+                pagination = payload.get("pagination", {}) if isinstance(payload, dict) else {}
+                pages_fetched += 1
+                for job in batch:
+                    guid = str(job.get("guid") or job.get("reqid") or "").strip()
+                    if guid:
+                        jobs_by_guid[guid] = job
+                total = pagination.get("total") if isinstance(pagination, dict) else None
+                if isinstance(total, int):
+                    advertised_total += total if page == 1 else 0
+                has_more = bool(pagination.get("has_more_pages")) if isinstance(pagination, dict) else False
+                total_pages = pagination.get("total_pages") if isinstance(pagination, dict) else None
+                if not has_more or (isinstance(total_pages, int) and page >= total_pages):
+                    location_complete = True
+                    break
+                if not batch:
+                    location_complete = True
+                    break
+            complete = complete and location_complete
+
+        jobs = list(jobs_by_guid.values())
+        scoped = _prepare_structured_jobs(
+            jobs,
+            intent,
+            location_getter=lambda job: job.get("location_exact") or "; ".join(
+                str(item) for item in job.get("all_locations", [])
+            ),
+            title_getter=lambda job: job.get("title_exact", ""),
+        )
+        candidates: list[ProviderCandidate] = []
+        listing_urls: list[str] = []
+        for job in scoped[:_candidate_limit(task)]:
+            guid = str(job.get("guid") or job.get("reqid") or "").strip()
+            title = _norm(job.get("title_exact", ""))
+            location = _norm(job.get("location_exact") or job.get("city_exact") or "")
+            url = (
+                f"{self.MIRROR}/{_slug(location)}/{_slug(title)}/{guid}/job/"
+            )
+            listing_urls.append(url)
+            candidates.append(ProviderCandidate(
+                company=task["company"],
+                title=title,
+                url=url,
+                location=location,
+                remote_policy=_remote_policy(_json_text(job)),
+                provider=self.provider,
+                provider_job_id=guid,
+                description=str(job.get("description") or ""),
+                raw=job,
+            ))
+        return DiscoveryResult(
+            task["id"], self.provider, task["company"], task["url"],
+            "scanned" if candidates else "no_match", candidates,
+            method="jobsyn_solr_paginated_api", authoritative=complete,
+            listing_urls=listing_urls, pages_fetched=pages_fetched,
+            advertised_total=advertised_total or None,
+            pagination_complete=complete,
+        )
 
 
 class GenericHtmlAdapter(ProviderAdapter):
@@ -949,35 +1356,73 @@ class GenericHtmlAdapter(ProviderAdapter):
 
     def discover(self, task: dict[str, Any], client: HttpClient,
                  intent: SearchIntent) -> DiscoveryResult:
-        text = client.get_text(task["url"])
-        parser = _LinkExtractor()
-        parser.feed(text)
+        render = str(task.get("source", {}).get("render", "")).lower()
+        if render in {"js", "json_api"}:
+            browser_candidates = _browser_listing_candidates(task)
+            if browser_candidates:
+                return DiscoveryResult(
+                    task["id"], self.provider, task["company"], task["url"],
+                    "scanned", browser_candidates, method="browser_rendered_listing",
+                    listing_urls=[candidate.url for candidate in browser_candidates],
+                    pages_fetched=1, pagination_complete=False,
+                )
         candidates: list[ProviderCandidate] = []
+        listing_urls: list[str] = []
         seen: set[str] = set()
-        for link in parser.links:
-            href = _clean_candidate_href(urllib.parse.urljoin(task["url"], link["href"]))
-            if href in seen:
-                continue
-            seen.add(href)
-            if not _looks_job_link(href, link.get("text", "")):
-                continue
-            title = _norm(link.get("text", "")) or _title_from_url(href)
-            candidates.append(ProviderCandidate(
-                company=task["company"],
-                title=title,
-                url=href,
-                location="",
-                remote_policy="unknown",
-                provider=self.provider,
-                description="",
-                raw={"anchor_text": title},
-            ))
-            if len(candidates) >= _detail_fetch_limit(task):
-                break
-        if not candidates and str(task.get("source", {}).get("render", "")).lower() in {"js", "json_api"}:
+        visited_pages: set[str] = set()
+        page_url = task["url"]
+        advertised_total: int | None = None
+        complete = False
+        try:
+            for _ in range(MAX_LISTING_PAGES):
+                if page_url in visited_pages:
+                    break
+                visited_pages.add(page_url)
+                text = client.get_text(page_url)
+                page_total = _advertised_listing_total(text)
+                if page_total is not None:
+                    advertised_total = max(advertised_total or 0, page_total)
+                parser = _LinkExtractor()
+                parser.feed(text)
+                for link in parser.links:
+                    href = _clean_candidate_href(urllib.parse.urljoin(page_url, link["href"]))
+                    if href in seen or not _looks_job_link(href, link.get("text", "")):
+                        continue
+                    seen.add(href)
+                    listing_urls.append(href)
+                    title = _norm(link.get("text", "")) or _title_from_url(href)
+                    candidates.append(ProviderCandidate(
+                        company=task["company"], title=title, url=href, location="",
+                        remote_policy="unknown", provider=self.provider,
+                        raw={"anchor_text": title, "listing_page": len(visited_pages)},
+                    ))
+                next_url = _explicit_next_url(parser, page_url)
+                if not next_url and advertised_total is not None and len(seen) < advertised_total:
+                    next_url = _numbered_page_url(task["url"], len(visited_pages) + 1)
+                if not next_url:
+                    complete = advertised_total is None or len(seen) >= advertised_total
+                    break
+                page_url = next_url
+        except FetchError:
+            browser_candidates = _browser_listing_candidates(task)
+            if browser_candidates:
+                return DiscoveryResult(
+                    task["id"], self.provider, task["company"], task["url"],
+                    "scanned", browser_candidates, method="browser_fetch_fallback",
+                    listing_urls=[candidate.url for candidate in browser_candidates],
+                    pages_fetched=1, pagination_complete=False,
+                )
+            raise
+        if not candidates and render in {"js", "json_api"}:
             candidates = _browser_listing_candidates(task)
+            complete = False
+        candidates = _prioritize_provider_candidates(candidates, intent)[:_candidate_limit(task)]
         return DiscoveryResult(task["id"], self.provider, task["company"], task["url"],
-                               "scanned", candidates, method="static_html")
+                               "scanned", candidates, method="paginated_static_html",
+                               authoritative=complete, listing_urls=listing_urls,
+                               pages_fetched=len(visited_pages),
+                               advertised_total=advertised_total,
+                               pagination_complete=complete)
 
 
 ADAPTERS: list[ProviderAdapter] = [
@@ -990,6 +1435,8 @@ ADAPTERS: list[ProviderAdapter] = [
     RecruiteeAdapter(),
     TeamtailorAdapter(),
     ICIMSAdapter(),
+    GoogleCareersAdapter(),
+    MetaCareersAdapter(),
     GenericHtmlAdapter(),
 ]
 
@@ -1040,11 +1487,12 @@ def _looks_non_job_title(text: str) -> bool:
 def _clean_candidate_href(url: str) -> str:
     parts = urllib.parse.urlsplit(url)
     path = re.sub(
-        r"(/about/careers/applications/jobs/results)/(?:jobs/results/)+",
-        r"\1/",
+        r"(/about/careers/applications/jobs)/jobs/results/",
+        r"\1/results/",
         parts.path,
         flags=re.I,
     )
+    path = re.sub(r"(/jobs/results/)(?:jobs/results/)+", r"\1", path, flags=re.I)
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
@@ -1141,6 +1589,8 @@ def _intent(project: Path) -> SearchIntent:
             loc_terms.update({"san francisco", "bay area", "california", "ca", "united states"})
         if lower in {"la", "l.a.", "los angeles"}:
             loc_terms.update({"los angeles", "santa monica", "culver city", "california", "ca"})
+        if lower in {"sg", "singapore"}:
+            loc_terms.update({"sg", "singapore"})
         if "san mateo" in lower:
             loc_terms.update({"san mateo", "bay area", "california", "ca"})
     return SearchIntent(
@@ -1156,13 +1606,23 @@ def _intent(project: Path) -> SearchIntent:
 
 def _load_universe(project: Path, intent: SearchIntent) -> dict[str, Any]:
     path = project / "targets" / "company-universe.json"
+    current_fingerprint = project_meta.preference_fingerprint(project)
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(data, dict) and data.get("buckets"):
+            if (isinstance(data, dict) and data.get("buckets")
+                    and data.get("preference_fingerprint") == current_fingerprint):
                 return data
         except json.JSONDecodeError:
             pass
+    named_targets = [
+        company for company in intent.target_companies
+        if not resolve_company_sources.is_category_seed(company)
+    ]
+    descriptors = [
+        company for company in intent.target_companies
+        if resolve_company_sources.is_category_seed(company)
+    ]
     companies = [
         {
             "name": company,
@@ -1171,17 +1631,19 @@ def _load_universe(project: Path, intent: SearchIntent) -> dict[str, Any]:
             "evidence": "project-meta.json target_companies",
             "priority": "high",
         }
-        for company in intent.target_companies
+        for company in named_targets
     ]
     data = {
         "generated_at": _today(),
         "project": project.name,
+        "preference_revision": int(project_meta.load(project).get("preference_revision", 0) or 0),
+        "preference_fingerprint": current_fingerprint,
         "expansion_mode": "seed-only-deterministic-baseline",
         "expansion_note": (
             "Deterministic baseline uses declared companies and existing universe "
-            "artifacts. Run an LLM-assisted market-map phase separately for broad "
-            "adjacent-company expansion."
+            "artifacts. Category descriptors require the preference-time model planner."
         ),
+        "unresolved_descriptors": descriptors,
         "buckets": [{
             "bucket": "declared-target-companies",
             "why_relevant": "User-declared target companies for deterministic baseline search.",
@@ -1208,6 +1670,8 @@ def _universe_companies(universe: dict[str, Any], intent: SearchIntent) -> list[
             seen.add(key)
             out.append(dict(company))
     for company in intent.target_companies:
+        if resolve_company_sources.is_category_seed(company):
+            continue
         key = _norm_key(company)
         if key not in seen:
             seen.add(key)
@@ -1218,10 +1682,12 @@ def _universe_companies(universe: dict[str, Any], intent: SearchIntent) -> list[
 
 def _load_or_build_source_plan(project: Path, companies: list[dict[str, Any]]) -> dict[str, Any]:
     path = project / "targets" / "source-plan.json"
+    company_fingerprint = _company_set_fingerprint(companies)
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(data, dict) and isinstance(data.get("companies"), list):
+            if (isinstance(data, dict) and isinstance(data.get("companies"), list)
+                    and data.get("company_set_fingerprint") == company_fingerprint):
                 return data
         except json.JSONDecodeError:
             pass
@@ -1233,6 +1699,7 @@ def _load_or_build_source_plan(project: Path, companies: list[dict[str, Any]]) -
     data = {
         "generated_at": _today(),
         "project": project.name,
+        "company_set_fingerprint": company_fingerprint,
         "phase_scope": "deterministic search generated source plan",
         "source_order": [
             "registered official careers source",
@@ -1254,9 +1721,26 @@ def _adapter_for(url: str, source: dict[str, Any]) -> ProviderAdapter | None:
     return None
 
 
-def _source_urls(source: dict[str, Any]) -> list[str]:
+def _source_urls(source: dict[str, Any], intent: SearchIntent | None = None) -> list[str]:
     urls: list[str] = []
-    if source.get("url"):
+    templates = [
+        str(source.get("keyword_location_search_url_template") or "").strip(),
+        str(source.get("location_search_url_template") or "").strip(),
+    ]
+    templates = [template for template in templates if template]
+    locations = intent.target_locations if intent else []
+    if templates and locations:
+        role = urllib.parse.quote_plus(intent.focus_role if intent else "")
+        for template in templates:
+            for location in locations:
+                encoded_location = urllib.parse.quote_plus(location)
+                urls.append(
+                    template.replace("{country_or_city}", encoded_location)
+                    .replace("{location}", encoded_location)
+                    .replace("{keyword}", role)
+                    .replace("{query}", role)
+                )
+    elif source.get("url"):
         urls.append(str(source["url"]))
     for url in source.get("urls", []) if isinstance(source.get("urls"), list) else []:
         urls.append(str(url))
@@ -1274,6 +1758,7 @@ def _source_urls(source: dict[str, Any]) -> list[str]:
 def _build_tasks(
     plan: dict[str, Any],
     runtime_policy: SearchRuntimePolicy,
+    intent: SearchIntent,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     tasks: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
@@ -1289,7 +1774,7 @@ def _build_tasks(
             source_type = str(source.get("type", ""))
             if "linkedin" in source_type.lower():
                 continue
-            urls = _source_urls(source)
+            urls = _source_urls(source, intent)
             if not urls:
                 unsupported.append({
                     "company": company_name,
@@ -1369,10 +1854,11 @@ def _matches_location(candidate: ProviderCandidate, jd_text: str,
                       intent: SearchIntent) -> bool:
     if not intent.location_terms:
         return True
-    hay = f"{candidate.location} {candidate.title} {jd_text}".lower()
-    if any(term in hay for term in REMOTE_TERMS):
-        return True
-    return any(term in hay for term in intent.location_terms)
+    location = (
+        location_normalize.normalize_location_value(candidate.location)
+        or _infer_location_from_jd(jd_text)
+    )
+    return _job_location_match(location, candidate.remote_policy, intent)
 
 
 def _extract_jd(
@@ -1561,19 +2047,9 @@ def _browser_extract(
 
 
 def _requirements(jd_text: str, preferred: bool = False) -> str:
-    if preferred:
-        keywords = ("preferred", "nice to have", "bonus", "plus", "ideally")
-    else:
-        keywords = (
-            "require", "qualification", "experience", "years", "ability",
-            "proven", "must", "responsible", "lead", "manage", "partner",
-            "strategy", "strategic",
-        )
-    matches = [
-        s for s in _sentences(jd_text)
-        if any(k in s.lower() for k in keywords)
-    ]
-    return "; ".join(_first_unique(matches, 8))
+    classified = jd_text_cleaner.classify_requirements(jd_text)
+    key = "preferred" if preferred else "must_have"
+    return "; ".join(classified[key][:8])
 
 
 def _summary(jd_text: str) -> str:
@@ -1690,8 +2166,7 @@ def _infer_location_from_jd(jd_text: str) -> str:
         for line in text.splitlines()
         if re.search(r"\b(location|based in|office)\b", line, re.I)
     ][:8]
-    haystacks = location_lines or [text[:2500]]
-    for hay in haystacks:
+    for hay in location_lines:
         lower = hay.lower()
         for city, country in city_countries.items():
             if re.search(r"\b" + re.escape(city) + r"\b", lower):
@@ -1746,6 +2221,7 @@ def _snapshot(
     fallbacks: list[str],
 ) -> dict[str, Any]:
     jd_text = jd_text_cleaner.clean_jd_text(jd_text, limit=JD_TEXT_CAP)
+    classified = jd_text_cleaner.classify_requirements(jd_text)
     return {
         "schema": "rolescout-jd-snapshot-v1",
         "job_id": row["job_id"],
@@ -1762,9 +2238,11 @@ def _snapshot(
         "raw_text": jd_text,
         "jd_text": jd_text,
         "structured_sections": {
-            "requirements": _requirements(jd_text),
-            "preferred": _requirements(jd_text, preferred=True),
+            "requirements": "; ".join(classified["must_have"][:8]),
+            "preferred": "; ".join(classified["preferred"][:8]),
+            "essential_qualifications": classified["essential_qualifications"],
         },
+        "requirements_schema": "must-preferred-essential-v3",
         "fallback_history": fallbacks,
         "warnings": [],
     }
@@ -1854,6 +2332,21 @@ def _no_postings_candidate(company: str, provider: str, task_id: str) -> dict[st
     }
 
 
+def _incomplete_source_candidate(result: DiscoveryResult) -> dict[str, Any]:
+    return {
+        "company": result.company,
+        "title": "Source enumeration incomplete",
+        "decision": "pending_fallback",
+        "reason": (
+            "The listing source did not complete pagination or was not authoritative; "
+            "absence of captured postings is not evidence that no postings exist."
+        ),
+        "reason_code": "coverage_incomplete",
+        "source_task_id": result.task_id,
+        "provider": result.provider,
+    }
+
+
 def _query_from_result(result: DiscoveryResult) -> dict[str, Any]:
     return {
         "scope": "board_enumeration",
@@ -1862,7 +2355,10 @@ def _query_from_result(result: DiscoveryResult) -> dict[str, Any]:
         "source_task_id": result.task_id,
         "q": result.method or result.source_url,
         "source_url": result.source_url,
-        "results_seen": len(result.candidates),
+        "results_seen": len(result.listing_urls) if result.listing_urls else len(result.candidates),
+        "pages_fetched": result.pages_fetched,
+        "advertised_total": result.advertised_total,
+        "pagination_complete": result.pagination_complete,
         "observed": result.status if not result.error else f"{result.status}: {result.error}",
         "runner_owned": True,
     }
@@ -1885,6 +2381,7 @@ def _update_source_plan(
     plan: dict[str, Any],
     results: list[DiscoveryResult],
     unsupported: list[dict[str, Any]],
+    intent: SearchIntent,
 ) -> None:
     result_by_company: dict[str, list[DiscoveryResult]] = {}
     for result in results:
@@ -1919,14 +2416,20 @@ def _update_source_plan(
                 source["status"] = "planned"
                 source["note"] = "optional supplemental source; not required for baseline search"
                 continue
-            urls = set(_source_urls(source))
+            urls = set(_source_urls(source, intent))
             matched = [
                 result for result in company_results
-                if result.source_url in urls or not urls
+                if urls and result.source_url in urls
             ]
             if matched:
-                if any(r.status == "scanned" and r.candidates for r in matched):
+                if any(
+                    r.status == "scanned" and r.candidates and r.pagination_complete
+                    for r in matched
+                ):
                     source["status"] = "ok"
+                elif any(r.status == "scanned" and not r.pagination_complete for r in matched):
+                    source["status"] = "blocked"
+                    source["note"] = "Listing pagination did not complete."
                 elif all(r.status in {"no_match", "empty"} for r in matched):
                     source["status"] = "empty"
                 elif any(r.status.startswith("blocked") for r in matched):
@@ -1961,6 +2464,45 @@ def _persist_rows(project: Path, rows: list[dict[str, str]]) -> tuple[int, str]:
         incoming.unlink(missing_ok=True)
     except OSError:
         pass
+    return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def _lifecycle_manifest(results: list[DiscoveryResult], run_id: str) -> dict[str, Any]:
+    sources: list[dict[str, Any]] = []
+    for result in sorted(results, key=lambda item: item.task_id):
+        seen_ids: set[str] = set()
+        urls = result.listing_urls or [candidate.url for candidate in result.candidates]
+        for url in urls:
+            if not url:
+                continue
+            try:
+                info = normalize_job_url.build(url, result.company, "")
+            except ValueError:
+                continue
+            if info.get("job_id"):
+                seen_ids.add(str(info["job_id"]))
+        sources.append({
+            "source_key": result.task_id,
+            "company": result.company,
+            "provider": result.provider,
+            "source_url": result.source_url,
+            "scan_status": result.status,
+            "authoritative": bool(result.authoritative),
+            "seen_job_ids": sorted(seen_ids),
+        })
+    return {"schema": "rolescout-job-lifecycle-manifest-v1",
+            "run_id": run_id, "sources": sources}
+
+
+def _reconcile_lifecycle(project: Path, results: list[DiscoveryResult],
+                         details_dir: Path) -> tuple[int, str]:
+    manifest = _lifecycle_manifest(results, "deterministic-" + _now_utc())
+    path = details_dir / "lifecycle-manifest.json"
+    _write_json(path, manifest)
+    result = core.run_script(
+        "reconcile_job_lifecycle", str(path), "--project", str(project),
+        env={**os.environ, "RECRUITING_PROJECT_DIR": str(project)},
+    )
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
@@ -1999,7 +2541,7 @@ def run_search(
     universe = _load_universe(project, intent)
     companies = _universe_companies(universe, intent)
     plan = _load_or_build_source_plan(project, companies)
-    tasks, unsupported = _build_tasks(plan, runtime_policy)
+    tasks, unsupported = _build_tasks(plan, runtime_policy, intent)
     emit(
         "deterministic_search: "
         f"profile={runtime_policy.name} companies={len(companies)} "
@@ -2052,9 +2594,17 @@ def run_search(
             "error": result.error,
             "method": result.method,
             "elapsed_s": result.elapsed_s,
+            "authoritative": result.authoritative,
+            "pages_fetched": result.pages_fetched,
+            "advertised_total": result.advertised_total,
+            "pagination_complete": result.pagination_complete,
         })
         if not result.candidates:
-            candidates_log.append(_no_postings_candidate(result.company, result.provider, result.task_id))
+            candidates_log.append(
+                _no_postings_candidate(result.company, result.provider, result.task_id)
+                if result.pagination_complete and result.authoritative
+                else _incomplete_source_candidate(result)
+            )
             continue
         for candidate in result.candidates:
             if not candidate.title or not candidate.url:
@@ -2167,15 +2717,15 @@ def run_search(
             candidates_log.append({
                 "company": name,
                 "title": "No executable deterministic source completed",
-                "decision": "no_postings_found",
+                "decision": "pending_fallback",
                 "reason": (
                     "No deterministic provider task completed for this company in the "
                     "baseline scan; see source-plan and source-tasks for blocked sources."
                 ),
-                "reason_code": "no_postings",
+                "reason_code": "coverage_incomplete",
             })
 
-    _update_source_plan(project, plan, results, unsupported)
+    _update_source_plan(project, plan, results, unsupported, intent)
     for snapshot in snapshots:
         _write_json(targets / "jobs" / f"{snapshot['job_id']}.json", snapshot)
 
@@ -2216,6 +2766,14 @@ def run_search(
     emit("deterministic_search: persist_job_rows " + ("OK" if persist_rc == 0 else "REFUSED"))
     if persist_out:
         emit(persist_out[:1200])
+    lifecycle_rc = 0
+    lifecycle_out = "skipped because row persistence failed"
+    if persist_rc == 0:
+        lifecycle_rc, lifecycle_out = _reconcile_lifecycle(project, results, details_dir)
+    emit("deterministic_search: reconcile_job_lifecycle " +
+         ("OK" if lifecycle_rc == 0 else "FAILED"))
+    if lifecycle_out:
+        emit(lifecycle_out[:1200])
 
     coverage = core.run_script("generate_coverage_audit", str(project),
                                env={**os.environ, "RECRUITING_PROJECT_DIR": str(project)})
@@ -2231,6 +2789,28 @@ def run_search(
     if view_output:
         emit(view_output[:1200])
 
+    successful_companies = {
+        _norm_key(result.company)
+        for result in results
+        if result.status in {"scanned", "no_match"} and result.pagination_complete
+    }
+    incomplete_pagination_sources = [
+        result.task_id for result in results
+        if result.status in {"scanned", "no_match"} and not result.pagination_complete
+    ]
+    planned_company_names = [
+        str(company.get("name", "")).strip()
+        for company in companies
+        if str(company.get("name", "")).strip()
+    ]
+    companies_without_success = [
+        name for name in planned_company_names
+        if _norm_key(name) not in successful_companies
+    ]
+    companies_with_success = [
+        name for name in planned_company_names
+        if _norm_key(name) in successful_companies
+    ]
     summary = {
         "schema": "rolescout-deterministic-search-summary-v1",
         "generated_at": _now_utc(),
@@ -2241,6 +2821,9 @@ def run_search(
         "runtime_profile": runtime_policy.name,
         "source_workers": min(runtime_policy.source_workers, len(tasks)) if tasks else 0,
         "provider_results": len(results),
+        "companies_with_success": companies_with_success,
+        "companies_without_success": companies_without_success,
+        "incomplete_pagination_sources": incomplete_pagination_sources,
         "candidates_seen": sum(len(result.candidates) for result in results),
         "jd_extraction_candidates": len(pending_extractions),
         "jd_extraction_workers": (
@@ -2251,6 +2834,7 @@ def run_search(
         "kept_rows": len(rows),
         "snapshots": len(snapshots),
         "persist_returncode": persist_rc,
+        "lifecycle_returncode": lifecycle_rc,
         "coverage_returncode": coverage.returncode,
         "view_returncode": view.returncode,
         "llm_tokens_in": 0,
@@ -2263,9 +2847,9 @@ def run_search(
     }
     out_path = details_dir / "summary.json"
     _write_json(out_path, summary)
-    if persist_rc != 0:
+    if persist_rc != 0 or lifecycle_rc != 0:
         status = "failed"
-    elif rows:
+    elif rows and not companies_without_success and not incomplete_pagination_sources:
         status = "ok"
     else:
         status = "partial"
