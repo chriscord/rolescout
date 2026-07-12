@@ -13,27 +13,38 @@ canned rows can't pollute user data. Live runs use the active project (or
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
-import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
+from typing import Any
 
-from .. import core, llm, project_meta
+from .. import (
+    application_audit,
+    core,
+    decision_policy,
+    llm,
+    profile_meta,
+    project_meta,
+    score_staging,
+)
+from .. import universe as universe_state
 from ..paths import RoleScoutError, active_project_dir, home_dir, repo_root
+from ..privacy import source_extract
 from ..telemetry import store as tstore
 
 jd_text_cleaner = core.load("jd_text_cleaner")
 
 WORKFLOW_SKILLS = {
     "profile-intake": ["candidate-profile-builder"],
+    "opportunity-plan": [],
     "search": ["job-opening-research", "target-job-group-strategy"],
     "prep": [
         "prep-strategy",
@@ -60,18 +71,33 @@ FOCUS_SCOPED = {"prep", "prep-strategy", "prep-resume", "prep-linkedin",
                 "prep-interview"}
 PROFILE_WORKFLOW = "profile-intake"
 DEFAULT_SEARCH_RETRY_COMPANY_LIMIT = 8
-SCORE_BATCH_MAX_JOBS = 20
-SCORE_BATCH_RETRY_JOBS = 5
+SCORE_CONTRACT_VERSION = "rolescout-score-contract-v3"
+SCORE_BATCH_MAX_JOBS = 4
+SCORE_BATCH_MAX_REQUIREMENTS = 16
+SCORE_BATCH_RETRY_JOBS = 1
 SCORE_BATCH_MAX_CHARS = 28000
 SCORE_BATCH_WORKERS = 3
+DERIVED_SCORE_CRITERIA = frozenset({"minimum_requirement", "essential_qualification"})
 SCORE_FIELD_LIMITS = {
     "must_have_requirements": 700,
     "nice_to_have_requirements": 350,
     "jd_summary": 700,
     "notes": 350,
+    "essential_qualifications": 700,
 }
-SCORE_PROFILE_LIMIT = 6000
-SCORE_EVIDENCE_LIMIT = 5000
+SCORE_PROFILE_LIMIT = 8000
+SCORE_EVIDENCE_LIMIT = 8000
+RESUME_ARTIFACT_SCHEMA = "rolescout-resume-group-artifacts-v1"
+RESUME_TARGET_BRIEF_SCHEMA = "rolescout-resume-target-brief-v1"
+RESUME_REASON_VALUES = (
+    "req_match", "impact", "scope", "domain", "differentiator", "narrative",
+)
+RESUME_REWRITE_TYPES = (
+    "new", "substantial_rewrite", "compressed", "reframed", "selected",
+)
+STAGED_PUBLISH_WORKFLOWS = {
+    "prep-strategy", "prep-resume", "prep-linkedin", "story-bank", "prep-interview", "apply",
+}
 
 
 def _legacy_llm_search_enabled() -> bool:
@@ -98,26 +124,52 @@ def _focused_job_ids(project: Path) -> list[str]:
 
 def _focused_job_rows(project: Path) -> list[dict]:
     """Focused positions joined with full job_list rows, preserving focus order."""
-    import csv as _csv
+    from ..repositories import job_rows
     ids = _focused_job_ids(project)
     if not ids:
         return []
     rows: dict[str, dict] = {}
-    jl = project / "data" / "job_list.csv"
-    if jl.exists():
-        with open(jl, newline="", encoding="utf-8") as f:
-            for r in _csv.DictReader(f):
-                job_id = str(r.get("job_id", "") or "").strip()
-                if job_id in ids:
-                    row = dict(r)
-                    row.setdefault("url", row.get("job_page_url") or row.get("source_url", ""))
-                    rows[job_id] = row
+    for r in job_rows(project, job_ids=ids):
+        job_id = str(r.get("job_id", "") or "").strip()
+        row = dict(r)
+        row.setdefault("url", row.get("job_page_url") or row.get("source_url", ""))
+        rows[job_id] = row
     return [rows[job_id] for job_id in ids if job_id in rows]
 
 
 def focused_jobs(project: Path) -> list[dict]:
     """Focused positions joined with job_list rows (empty list when none)."""
     return _focused_job_rows(project)
+
+
+def _current_scored_job_ids(project: Path) -> set[str]:
+    """Return dependency-current scored IDs; stale/unfinished rows are excluded."""
+    freshness_path = project / "strategy" / "score-freshness.json"
+    freshness = _read_json(freshness_path, None)
+    if isinstance(freshness, dict) and isinstance(freshness.get("current_job_ids"), list):
+        return {
+            str(job_id).strip() for job_id in freshness["current_job_ids"]
+            if str(job_id).strip()
+        }
+    # Legacy compatibility: before score-freshness existed, a canonical rating
+    # plus a persisted fit score is the strongest available currentness signal.
+    rating_ids = {
+        str(item.get("job_id", "")).strip() for item in _load_score_ratings(project)
+        if str(item.get("job_id", "")).strip()
+    }
+    return {
+        str(row.get("job_id", "")).strip() for row in _focused_job_rows(project)
+        if str(row.get("job_id", "")).strip() in rating_ids
+        and str(row.get("fit_score", "")).strip()
+    }
+
+
+def _strategy_focused_job_rows(project: Path) -> list[dict]:
+    scored = _current_scored_job_ids(project)
+    return [
+        row for row in _focused_job_rows(project)
+        if str(row.get("job_id", "")).strip() in scored
+    ]
 
 
 def _focused_group_slugs(project: Path) -> list[str]:
@@ -153,6 +205,11 @@ class RunContext:
         self.partial_reasons: list[dict] = []
         self.blocked_reasons: list[dict] = []
         self.artifacts_written: list[str] = []
+        # Local-only publish diagnostics. These are intentionally structured so
+        # telemetry can retain a safe code/target while detailed validator text
+        # remains in the run staging directory.
+        self.publish_errors: dict[str, dict] = {}
+        self.publish_results: dict[str, dict] = {}
 
     def check_cancelled(self) -> None:
         """Cooperative cancellation checkpoint — safe places only (never mid-write)."""
@@ -210,6 +267,44 @@ class RunContext:
             return "partial"
         return "ok"
 
+
+def _update_prep_progress(ctx: RunContext, phase: str, state: str, *,
+                          completed: int | None = None, total: int | None = None,
+                          detail: str = "") -> None:
+    """Persist and emit a compact prep state that the WebUI can poll mid-run."""
+    if ctx.workflow != "prep":
+        return
+    run_id = _slug(getattr(ctx, "run_id", ""), "unrecorded-run")
+    root = ctx.project / "runtime" / "runs" / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "prep-progress.json"
+    doc = _read_json(path, {})
+    if not isinstance(doc, dict):
+        doc = {}
+    phases = doc.get("phases") if isinstance(doc.get("phases"), dict) else {}
+    item = {"state": state, "updated_at": _now()}
+    if completed is not None:
+        item["completed"] = completed
+    if total is not None:
+        item["total"] = total
+    if detail:
+        item["detail"] = detail[:500]
+    phases[phase] = item
+    doc.update({
+        "schema": "rolescout-prep-progress-v1",
+        "run_id": getattr(ctx, "run_id", ""),
+        "workflow": "prep",
+        "current_phase": phase,
+        "state": state,
+        "phases": phases,
+        "updated_at": _now(),
+        "revision": int(doc.get("revision", 0) or 0) + 1,
+    })
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+    count = (f" {completed}/{total}" if completed is not None and total is not None else "")
+    ctx.emit("prep_progress", f"{phase}: {state}{count}", {"prep_progress": doc})
 
 BLOCKED_ERROR_SNIPPETS = (
     "selected model is at capacity",
@@ -469,13 +564,72 @@ def _build_run_intent(project: Path, workflow: str, task: str | None) -> dict:
     }
 
 
+_APPLICATION_TITLE_STOPWORDS = frozenset({
+    "a", "an", "and", "apac", "at", "for", "in", "lead", "manager", "of", "on",
+    "senior", "singapore", "the", "to",
+})
+
+
+def _application_title_tokens(value: str) -> set[str]:
+    return {
+        token for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if token not in _APPLICATION_TITLE_STOPWORDS and (len(token) > 2 or token in {"ai", "vc"})
+    }
+
+
+def _select_application_jobs(project: Path, task: str | None,
+                             run_intent: dict | None = None) -> list[dict]:
+    """Resolve an apply instruction to focused rows without semantic guessing.
+
+    Exact job IDs win.  Otherwise company names constrain scope and distinctive
+    title-token overlap identifies requested roles.  A bare company request
+    intentionally selects all focused roles for that company.
+    """
+    rows = _focused_job_rows(project)
+    if not rows:
+        return []
+    raw = str(task or "").strip()
+    lowered = raw.lower()
+    exact = [row for row in rows if str(row.get("job_id", "")) in raw]
+    if exact:
+        return exact
+    intent = run_intent or _build_run_intent(project, "apply", raw)
+    requested_companies = {
+        _slug(name, "") for name in intent.get("requested_companies", []) if _slug(name, "")
+    }
+    company_rows = [
+        row for row in rows
+        if not requested_companies or _slug(row.get("company", ""), "") in requested_companies
+    ]
+    if not raw:
+        return company_rows
+    matched: list[dict] = []
+    for row in company_rows:
+        tokens = _application_title_tokens(str(row.get("title", "")))
+        overlap = {token for token in tokens if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", lowered)}
+        # Two distinctive words are enough.  VC is accepted alone because it is
+        # a specific role-family acronym; a generic shared word such as
+        # deployment is deliberately insufficient.
+        if len(overlap) >= 2 or "vc" in overlap:
+            matched.append(row)
+    if matched:
+        return matched
+    if requested_companies:
+        return company_rows
+    return rows
+
+
 def _agent_log_dir(ctx: RunContext) -> Path | None:
     if not ctx.run_id:
         return None
-    return ctx.project / "runs" / ctx.run_id / "agents"
+    return ctx.project / "runtime" / "runs" / ctx.run_id / "agents"
 
 
 def _append_agent_log(ctx: RunContext, label: str, text: str) -> None:
+    # Raw streams/results can contain resume or profile text. They are disabled
+    # by default; the opt-in is intentionally explicit and developer-oriented.
+    if os.environ.get("ROLESCOUT_RAW_RUN_LOGS") != "1":
+        return
     log_dir = _agent_log_dir(ctx)
     if log_dir is None:
         return
@@ -500,9 +654,16 @@ def _write_agent_manifest(ctx: RunContext, records: list[dict]) -> None:
         return
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "manifest.json").write_text(
+        path = log_dir / "manifest.json"
+        existing = _read_json(path, {})
+        prior = existing.get("agents", []) if isinstance(existing, dict) else []
+        merged: dict[str, dict] = {}
+        for item in [*prior, *records]:
+            if isinstance(item, dict) and item.get("label"):
+                merged[str(item["label"])] = item
+        path.write_text(
             json.dumps({"schema": "rolescout-agent-log-manifest-v1",
-                        "run_id": ctx.run_id, "agents": records},
+                        "run_id": ctx.run_id, "agents": list(merged.values())},
                        indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
     except OSError:
@@ -537,7 +698,7 @@ def _safe_artifact_rel(rel: str) -> tuple[Path, str]:
     """
     rel_norm = str(rel or "").replace("\\", "/")
     pure = PurePosixPath(rel_norm)
-    if pure.is_absolute() or not pure.parts:
+    if pure.is_absolute() or re.match(r"^[A-Za-z]:/", rel_norm) or not pure.parts:
         raise RoleScoutError("artifact path escapes the project")
     if any(part in ("", ".", "..") for part in pure.parts):
         raise RoleScoutError("artifact path escapes the project")
@@ -550,7 +711,6 @@ _LINKEDIN_SCORE_SECTIONS = {
     "experienceentries",
     "skills",
     "education",
-    "activity",
 }
 
 _INTERVIEW_HEADING_ALIASES = {
@@ -594,6 +754,7 @@ def _normalize_linkedin_review_text(text: str) -> str:
     """
     lines = str(text or "").splitlines()
     out: list[str] = []
+    scores: dict[str, float] = {}
     for raw in lines:
         line = raw
         stripped = line.strip()
@@ -610,16 +771,45 @@ def _normalize_linkedin_review_text(text: str) -> str:
             continue
         if stripped.startswith("|") and "---" not in stripped:
             cells = [c.strip() for c in stripped.strip("|").split("|")]
-            if len(cells) >= 2 and _linkedin_section_key(cells[0]) in _LINKEDIN_SCORE_SECTIONS:
+            section_key = _linkedin_section_key(cells[0]) if cells else ""
+            if len(cells) >= 2 and section_key in _LINKEDIN_SCORE_SECTIONS:
                 score = cells[1]
-                match = re.fullmatch(r"([1-5](?:\.\d+)?)", score)
+                match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s*/\s*5)?", score)
                 if match:
-                    cells[1] = f"{match.group(1)}/5"
+                    value = min(5.0, max(1.0, float(match.group(1))))
+                    shown = str(int(value)) if value.is_integer() else f"{value:g}"
+                    cells[1] = f"{shown}/5"
+                    scores[section_key] = value
                 cells = [_strip_linkedin_name_mismatch_phrases(cell) for cell in cells]
                 line = "| " + " | ".join(cells) + " |"
         elif _linkedin_name_mismatch_line(stripped):
             continue
         out.append(_strip_linkedin_name_mismatch_phrases(line))
+    if _LINKEDIN_SCORE_SECTIONS.issubset(scores):
+        weighted = (
+            scores["headline"] + scores["about"]
+            + scores["experienceentries"] * 3
+            + scores["skills"] + scores["education"]
+        ) / 7
+        canonical_overall = (
+            f"Overall score: {weighted:.1f}/5 (weighted: Experience x3)."
+        )
+        replaced = False
+        for index, line in enumerate(out):
+            if re.match(r"^\s*Overall score\s*:", line, re.I):
+                if not replaced:
+                    out[index] = canonical_overall
+                    replaced = True
+                else:
+                    out[index] = ""
+        if not replaced:
+            table_end = next((
+                index for index, line in enumerate(out)
+                if index > 0 and not line.strip() and any(
+                    candidate.strip().startswith("|") for candidate in out[max(0, index - 8):index]
+                )
+            ), len(out))
+            out.insert(table_end, canonical_overall)
     normalized = "\n".join(out)
     if text.endswith("\n"):
         normalized += "\n"
@@ -692,7 +882,10 @@ def make_mock_project(run_id: str) -> Path:
     return dest
 
 
-def _write_artifact(ctx: RunContext, ev: dict) -> None:
+def _write_artifact(ctx: RunContext, ev: dict, provenance: dict | None = None) -> None:
+    import tempfile
+
+    from ..repositories import artifacts as artifact_repository
     rel_path, rel = _safe_artifact_rel(ev["path"])
     path = (ctx.project / rel_path).resolve()
     try:
@@ -701,16 +894,29 @@ def _write_artifact(ctx: RunContext, ev: dict) -> None:
         raise RoleScoutError("artifact path escapes the project") from e
     path.parent.mkdir(parents=True, exist_ok=True)
     if "json" in ev:
-        path.write_text(json.dumps(ev["json"], indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8")
+        content = json.dumps(ev["json"], indent=2, ensure_ascii=False) + "\n"
     else:
         text = str(ev.get("text", ""))
         if rel.startswith("linkedin/") and rel.endswith("/linkedin-review.md"):
             text = _normalize_linkedin_review_text(text)
         elif rel.startswith("interviews/") and rel.endswith(".md"):
             text = _normalize_interview_prep_text(text)
-        path.write_text(text, encoding="utf-8")
-    ctx.emit("artifact", rel)
+        content = text
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    provenance = provenance or {}
+    artifact_repository.record(
+        ctx.project, rel, path, getattr(ctx, "workflow", "unknown"),
+        input_fingerprint=str(provenance.get("prompt_fingerprint", "")),
+        model=str(provenance.get("model", "")),
+    )
+    ctx.emit("artifact", rel, {"artifact_path": rel, "published": True})
     ctx.artifacts_written.append(rel)
     if rel.endswith("reasons.json"):
         ctx.pending_reasons[str(Path(rel).parent)] = path
@@ -730,7 +936,7 @@ def _write_artifact(ctx: RunContext, ev: dict) -> None:
             ctx.failure_class = ctx.failure_class or "validator_failure"
 
 
-def _store_write(ctx: RunContext, ev: dict) -> None:
+def _store_write(ctx: RunContext, ev: dict) -> bool:
     store = ev["store"]
     rows_path = ctx.project / "data" / f"_incoming_{store}.json"
     rows_path.parent.mkdir(parents=True, exist_ok=True)
@@ -748,10 +954,12 @@ def _store_write(ctx: RunContext, ev: dict) -> None:
         rows_path.unlink()
     except OSError:
         pass
+    return r.returncode == 0
 
 
 def execute_events(ctx: RunContext, events: list[dict],
-                   allowed_artifacts: set[str] | None = None) -> None:
+                   allowed_artifacts: set[str] | None = None,
+                   *, allow_provider_mutations: bool = False) -> None:
     for ev in events:
         ctx.check_cancelled()  # between events: never mid-write
         t = ev.get("type")
@@ -759,6 +967,10 @@ def execute_events(ctx: RunContext, events: list[dict],
             if not ctx.streamed:  # streamed providers already showed these live
                 ctx.emit("progress", ev.get("text", ""))
         elif t == "artifact":
+            if not allow_provider_mutations:
+                ctx.mark_partial("provider_direct_write_rejected",
+                                 "provider artifact events are not accepted; use typed output")
+                continue
             if allowed_artifacts is not None:
                 try:
                     _, rel = _safe_artifact_rel(ev.get("path", ""))
@@ -777,6 +989,10 @@ def execute_events(ctx: RunContext, events: list[dict],
                     continue
             _write_artifact(ctx, ev)
         elif t == "store_write":
+            if not allow_provider_mutations:
+                ctx.mark_partial("provider_direct_write_rejected",
+                                 "provider store events are not accepted; use typed output")
+                continue
             _store_write(ctx, ev)
         elif t == "external_action":
             raise RoleScoutError(
@@ -1040,6 +1256,15 @@ def _post_run_resume_checks(ctx: RunContext) -> None:
         ctx.emit("validator", "post-run prep-resume artifact generation: FAIL")
         return
     baseline = ctx.project / "resumes" / "baseline-extracted.md"
+    project_doc = _read_json(ctx.project / "project.json", {})
+    person_slug = str(project_doc.get("person", "candidate") or "candidate")
+    try:
+        from . import preflight as _prep_preflight
+        profile_dir = _prep_preflight.profile_dir(ctx.project)
+    except Exception:
+        profile_dir = None
+    display_name = str(profile_meta.load(profile_dir).get("name", "") if profile_dir else "")
+    user_name = "".join(re.findall(r"[A-Za-z0-9]+", display_name or person_slug)) or "Candidate"
     for rel in draft_rels:
         draft = ctx.project / Path(rel)
         group_dir = draft.parent
@@ -1050,6 +1275,7 @@ def _post_run_resume_checks(ctx: RunContext) -> None:
             bullet_args += ["--reasons", str(reasons)]
         result = core.run_script("validate_resume_bullets", *bullet_args,
                                  env=_env_for(ctx.project))
+        bullet_ok = result.returncode == 0
         out = (result.stdout + result.stderr).strip()
         ctx.validator_results.append({
             "validator": "validate_resume_bullets[prep-resume]",
@@ -1092,6 +1318,7 @@ def _post_run_resume_checks(ctx: RunContext) -> None:
             "--reasons", str(reasons),
             env=_env_for(ctx.project),
         )
+        tailoring_ok = result.returncode == 0
         out = (result.stdout + result.stderr).strip()
         ctx.validator_results.append({
             "validator": "validate_resume_tailoring[prep-resume]",
@@ -1107,6 +1334,46 @@ def _post_run_resume_checks(ctx: RunContext) -> None:
             else:
                 ctx.failure_class = ctx.failure_class or "prep_resume_tailoring_failure"
             ctx.emit("validator", out[:800])
+        if not (bullet_ok and tailoring_ok):
+            continue
+
+        group = group_dir.name
+        docx = group_dir / f"resume_{user_name}_{group}.docx"
+        built = core.run_script("build_resume_docx", str(draft), str(docx),
+                                env=_env_for(ctx.project))
+        built_out = (built.stdout + built.stderr).strip()
+        ctx.validator_results.append({
+            "validator": "build_resume_docx[prep-resume]", "target": rel,
+            "returncode": built.returncode, "output": built_out[:800],
+        })
+        ctx.emit("validator", "build_resume_docx: " +
+                 ("PASS" if built.returncode == 0 else "FAIL"))
+        if built.returncode != 0 or not docx.exists():
+            if ctx.workflow == "prep":
+                ctx.mark_partial("prep-resume_docx", built_out[:800])
+            else:
+                ctx.failure_class = ctx.failure_class or "prep_resume_docx_failure"
+            continue
+        from ..repositories import artifacts as artifact_repository
+        docx_rel = docx.relative_to(ctx.project).as_posix()
+        artifact_repository.record(ctx.project, docx_rel, docx, ctx.workflow)
+        ctx.artifacts_written.append(docx_rel)
+        ctx.emit("artifact", docx_rel)
+
+        gate = core.run_script("render_docx_gate", str(docx), env=_env_for(ctx.project))
+        gate_out = (gate.stdout + gate.stderr).strip()
+        ctx.validator_results.append({
+            "validator": "render_docx_gate[prep-resume]", "target": docx_rel,
+            "returncode": gate.returncode, "output": gate_out[:800],
+        })
+        validation_path = group_dir / "resume-validation.md"
+        with validation_path.open("a", encoding="utf-8") as handle:
+            handle.write("\n\n## DOCX QA\n\n" + gate_out + "\n")
+        if gate.returncode != 0:
+            ctx.mark_partial("prep-resume_render_qa", f"{docx_rel}: {gate_out[:600]}")
+            ctx.emit("validator", "render_docx_gate: BLOCKED")
+        else:
+            ctx.emit("validator", "render_docx_gate: PASS")
 
 
 def _post_run_strategy_checks(ctx: RunContext) -> None:
@@ -1114,6 +1381,7 @@ def _post_run_strategy_checks(ctx: RunContext) -> None:
     required = {
         "strategy/prep-strategy.md",
         "strategy/target-priorities.md",
+        "strategy/group-assignments.json",
     }
     missing = sorted(path for path in required if path not in strategy_artifacts)
     group_artifacts = [
@@ -1166,6 +1434,11 @@ def _post_run_checks(ctx: RunContext) -> None:
                  f"post-run profile freshness: {'PASS' if ok else 'FAIL'}")
         if not ok:
             ctx.failure_class = ctx.failure_class or "profile_intake_incomplete"
+    if ctx.workflow == "prep" and ctx.failure_class:
+        # An upstream orchestration gate already recorded the actionable failure.
+        # Do not misreport downstream phases that intentionally never started as
+        # missing-artifact failures.
+        return
     if ctx.workflow in {"prep-strategy", "prep"}:
         _post_run_strategy_checks(ctx)
     prep_validators = []
@@ -1332,8 +1605,8 @@ def _build_search_view_filter_plan(ctx: RunContext) -> None:
     if llm.provider_choice(force_mock=False) == "mock":
         ctx.emit("info", "search view filter: no live lightweight LLM provider; using deterministic default")
         return
-    default_plan_proc = core.run_script("build_search_view", str(ctx.project), "--json",
-                                        env=_env_for(ctx.project))
+    core.run_script("build_search_view", str(ctx.project), "--json",
+                    env=_env_for(ctx.project))
     default_plan = {}
     plan_path = ctx.project / "targets" / "search-view-filter-plan.json"
     try:
@@ -1364,6 +1637,10 @@ def _build_search_view_filter_plan(ctx: RunContext) -> None:
         plan["schema"] = "rolescout-search-view-filter-plan-v1"
         plan["source"] = "llm_lightweight"
         plan["generated_at"] = _now()
+        current_meta = project_meta.load(ctx.project)
+        plan["preference_revision"] = int(
+            current_meta.get("preference_revision", 0) or 0)
+        plan["preference_fingerprint"] = project_meta.preference_fingerprint(current_meta)
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n",
                              encoding="utf-8")
@@ -1375,7 +1652,7 @@ def _build_search_view_filter_plan(ctx: RunContext) -> None:
         output = (rebuild.stdout + rebuild.stderr).strip()
         ctx.validator_results.append({
             "validator": "build_search_view",
-            "target": str(ctx.project / "data" / "job_list.visible.csv"),
+            "target": "public-opportunities.db:job_visibility",
             "returncode": rebuild.returncode,
             "output": output[:800],
         })
@@ -1465,13 +1742,32 @@ def _run_linkedin_capture_helper(ctx: RunContext, linkedin_url: str,
     return rc
 
 
-def _job_list_has_rows(project: Path) -> bool:
-    path = project / "data" / "job_list.csv"
+def _linkedin_capture_fingerprint(path: Path | None) -> str:
+    """Hash stable profile facts while ignoring capture-time and sidebar churn."""
+    if path is None:
+        return ""
     try:
-        with path.open(newline="", encoding="utf-8") as f:
-            return any(True for _ in csv.DictReader(f))
+        text = path.read_text(encoding="utf-8")
     except OSError:
-        return False
+        return ""
+    marker = "## Visible LinkedIn Profile Text"
+    visible = text.split(marker, 1)[1] if marker in text else text
+    stable_sections: list[str] = []
+    for label in ("Experience", "Skills", "Education"):
+        match = re.search(
+            rf"^###\s+{label}\s+surface\s*$\n(.*?)(?=^###\s+\w+\s+surface\s*$|\Z)",
+            visible,
+            re.I | re.M | re.S,
+        )
+        if match:
+            stable_sections.append(match.group(1).strip())
+    stable = "\n\n".join(stable_sections) if stable_sections else visible.strip()
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+
+def _job_list_has_rows(project: Path) -> bool:
+    from ..repositories import job_rows
+    return bool(job_rows(project))
 
 
 def _ratings_need_profile_refresh(project: Path) -> bool:
@@ -1491,17 +1787,91 @@ def _ratings_need_profile_refresh(project: Path) -> bool:
     return False
 
 
-def _score_view_path(project: Path) -> Path:
-    visible = project / "data" / "job_list.visible.csv"
-    return visible if visible.exists() else project / "data" / "job_list.csv"
-
-
-def _read_csv_dicts(path: Path) -> list[dict[str, str]]:
-    try:
-        with path.open(newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
-    except OSError:
-        return []
+def _score_rows(project: Path) -> list[dict[str, Any]]:
+    from ..repositories import job_rows
+    rows = job_rows(project, visible=True)
+    for row in rows:
+        job_id = str(row.get("job_id", "")).strip()
+        snapshot_path = project / "targets" / "jobs" / f"{job_id}.json"
+        snapshot = _read_json(snapshot_path, {})
+        sections = snapshot.get("structured_sections", {}) if isinstance(snapshot, dict) else {}
+        raw_jd = str(snapshot.get("jd_text") or snapshot.get("raw_text") or "")
+        requirement_contract: dict[str, Any] = {}
+        if isinstance(snapshot, dict) and raw_jd:
+            source_fingerprint = hashlib.sha256(raw_jd.encode("utf-8")).hexdigest()
+            requirement_path = project / "targets" / "requirements" / f"{job_id}.json"
+            cached = _read_json(requirement_path, {})
+            if (
+                cached.get("source_fingerprint") == source_fingerprint
+                and cached.get("schema") == jd_text_cleaner.REQUIREMENT_ATOMS_SCHEMA
+            ):
+                requirement_contract = cached
+            else:
+                requirement_contract = jd_text_cleaner.requirement_atoms(raw_jd)
+                requirement_contract.update({
+                    "job_id": job_id,
+                    "source_fingerprint": source_fingerprint,
+                    "normalization_status": "deterministic_candidates_ready",
+                    "coverage_issues": jd_text_cleaner.requirement_coverage_issues(
+                        raw_jd, requirement_contract
+                    ),
+                })
+                requirement_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = requirement_path.with_name(requirement_path.name + ".tmp")
+                tmp.write_text(
+                    json.dumps(requirement_contract, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(tmp, requirement_path)
+            atoms = requirement_contract.get("atoms", [])
+            minimum = [
+                item for item in atoms if isinstance(item, dict)
+                and item.get("obligation") in {"minimum_required", "required"}
+            ]
+            preferred = [
+                item for item in atoms if isinstance(item, dict)
+                and item.get("obligation") in {"preferred", "nice_to_have"}
+            ]
+            sections = {
+                "requirements": "; ".join(
+                    str(item.get("source_quote", "")) for item in minimum
+                ),
+                "preferred": "; ".join(
+                    str(item.get("source_quote", "")) for item in preferred
+                ),
+                "essential_qualifications": [
+                    str(item.get("source_quote", "")) for item in minimum
+                    if item.get("category") in {"degree", "license", "security"}
+                ],
+            }
+            snapshot["structured_sections"] = sections
+            snapshot["requirements_schema"] = jd_text_cleaner.REQUIREMENT_ATOMS_SCHEMA
+            tmp = snapshot_path.with_name(snapshot_path.name + ".tmp")
+            tmp.write_text(
+                json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            os.replace(tmp, snapshot_path)
+        if isinstance(sections, dict):
+            row["must_have_requirements"] = str(sections.get("requirements", ""))
+            row["nice_to_have_requirements"] = str(sections.get("preferred", ""))
+        essential = sections.get("essential_qualifications", []) if isinstance(sections, dict) else []
+        if isinstance(essential, list):
+            row["essential_qualifications"] = "; ".join(str(item) for item in essential)
+        else:
+            row["essential_qualifications"] = str(essential or "")
+        row["requirement_contract"] = requirement_contract.get(
+            "scoring_requirements", []
+        )
+        row["preferred_requirement_contract"] = requirement_contract.get(
+            "preferred_requirements", []
+        )
+        row["requirement_source_fingerprint"] = requirement_contract.get(
+            "source_fingerprint", ""
+        )
+        row["requirement_coverage_issues"] = requirement_contract.get(
+            "coverage_issues", []
+        )
+    return rows
 
 
 def _truncate_field(value: str, limit: int) -> str:
@@ -1511,7 +1881,7 @@ def _truncate_field(value: str, limit: int) -> str:
     return text[: max(0, limit - 20)].rstrip() + " ...[truncated]"
 
 
-def _score_compact_job(row: dict[str, str]) -> dict[str, str]:
+def _score_compact_job(row: dict[str, Any]) -> dict[str, Any]:
     out = {
         "job_id": row.get("job_id", ""),
         "company": row.get("company", ""),
@@ -1524,24 +1894,38 @@ def _score_compact_job(row: dict[str, str]) -> dict[str, str]:
     }
     for key, limit in SCORE_FIELD_LIMITS.items():
         out[key] = _truncate_field(row.get(key, ""), limit)
+    out["requirements"] = row.get("requirement_contract", [])
+    out["preferred_requirements"] = row.get("preferred_requirement_contract", [])
+    out["requirement_source_fingerprint"] = row.get(
+        "requirement_source_fingerprint", ""
+    )
+    out["requirement_coverage_issues"] = row.get("requirement_coverage_issues", [])
     return out
 
 
-def _score_batch_size(jobs: list[dict[str, str]]) -> int:
+def _score_batch_size(jobs: list[dict[str, Any]]) -> int:
     return len(json.dumps(jobs, ensure_ascii=False, separators=(",", ":")))
 
 
 def _make_score_batches(
-    jobs: list[dict[str, str]],
+    jobs: list[dict[str, Any]],
     *,
     max_jobs: int = SCORE_BATCH_MAX_JOBS,
+    max_requirements: int = SCORE_BATCH_MAX_REQUIREMENTS,
     max_chars: int = SCORE_BATCH_MAX_CHARS,
-) -> list[list[dict[str, str]]]:
-    batches: list[list[dict[str, str]]] = []
-    current: list[dict[str, str]] = []
+) -> list[list[dict[str, Any]]]:
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
     for job in jobs:
         candidate = [*current, job]
-        if current and (len(candidate) > max_jobs or _score_batch_size(candidate) > max_chars):
+        requirement_count = sum(
+            len(item.get("requirements", [])) for item in candidate
+        )
+        if current and (
+            len(candidate) > max_jobs
+            or requirement_count > max_requirements
+            or _score_batch_size(candidate) > max_chars
+        ):
             batches.append(current)
             current = [job]
         else:
@@ -1558,6 +1942,40 @@ def _score_criteria(project: Path) -> list[dict]:
     except (OSError, json.JSONDecodeError):
         return []
     criteria = cfg.get("criteria", []) if isinstance(cfg, dict) else []
+    if isinstance(cfg, dict) and isinstance(criteria, list):
+        existing = {
+            str(item.get("name", "")) for item in criteria if isinstance(item, dict)
+        }
+        additions = [
+            {
+                "name": "career_trajectory",
+                "weight": 0,
+                "description": "Career progression under the canonical decision policy; 1 violates it.",
+            },
+            {
+                "name": "essential_qualification",
+                "weight": 0,
+                "description": "Explicit must-have degree/license/certification coverage; 1 is unmet.",
+            },
+            {
+                "name": "minimum_requirement",
+                "weight": 0,
+                "description": "Central minimum or eligibility requirement coverage; 1 is unmet.",
+            },
+        ]
+        changed = False
+        for item in additions:
+            if item["name"] not in existing:
+                criteria.append(item)
+                changed = True
+        dealbreakers = cfg.setdefault("dealbreaker_criteria", [])
+        if isinstance(dealbreakers, list):
+            for name in ("career_trajectory", "essential_qualification", "minimum_requirement"):
+                if name not in dealbreakers:
+                    dealbreakers.append(name)
+                    changed = True
+        if changed:
+            path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return [item for item in criteria if isinstance(item, dict) and item.get("name")]
 
 
@@ -1570,7 +1988,144 @@ def _score_text_file(path: Path | None, limit: int) -> str:
         return ""
 
 
-def _score_candidate_context(base_context: dict) -> dict[str, str]:
+def _capability_source_fingerprint(profile_text: str, evidence_text: str) -> str:
+    return hashlib.sha256(
+        (profile_text + "\0" + evidence_text).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_capability_ledger(
+    payload: Any,
+    expected_fingerprint: str,
+    errors: list[str] | None = None,
+) -> dict[str, Any] | None:
+    def fail(message: str) -> None:
+        if errors is not None:
+            errors.append(message)
+
+    if not isinstance(payload, dict):
+        fail("payload must be an object")
+        return None
+    if payload.get("schema") != "rolescout-capability-ledger-v1":
+        fail("schema must be rolescout-capability-ledger-v1")
+        return None
+    if payload.get("source_fingerprint") != expected_fingerprint:
+        fail("source_fingerprint must exactly match the supplied value")
+        return None
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        fail("entries must be a list")
+        return None
+    clean: list[dict[str, Any]] = []
+    for index, item in enumerate(entries):
+        if not isinstance(item, dict):
+            fail(f"entries[{index}] must be an object")
+            return None
+        experience_id = str(item.get("experience_id", "")).strip()
+        function = str(item.get("function", "")).strip()
+        coverage_type = str(item.get("coverage_type", "")).strip()
+        evidence_ids = item.get("evidence_ids", [])
+        if (
+            not experience_id or not function
+            or coverage_type not in {"direct", "adjacent", "exposure"}
+            or not isinstance(evidence_ids, list)
+        ):
+            fail(
+                f"entries[{index}] needs experience_id, function, valid coverage_type, "
+                "and evidence_ids list"
+            )
+            return None
+        clean.append({
+            "experience_id": experience_id[:80],
+            "function": function[:160],
+            "coverage_type": coverage_type,
+            "start": str(item.get("start", ""))[:20],
+            "end": str(item.get("end", ""))[:20],
+            "evidence_ids": [str(value)[:40] for value in evidence_ids[:20]],
+            "scope": str(item.get("scope", ""))[:500],
+        })
+    return {
+        "schema": "rolescout-capability-ledger-v1",
+        "source_fingerprint": expected_fingerprint,
+        "generated_at": _now(),
+        "entries": clean,
+    }
+
+
+def _ensure_capability_ledger(
+    ctx: RunContext,
+    provider,
+    base_context: dict,
+    on_stream,
+) -> dict[str, Any]:
+    """Build only the cached ledger when canonical profile evidence changed."""
+    pdir_raw = str(base_context.get("profile_dir") or "").strip()
+    if not pdir_raw:
+        return {}
+    pdir = Path(pdir_raw)
+    profile_text = _score_text_file(pdir / "candidate-profile.md", SCORE_PROFILE_LIMIT)
+    evidence_text = _score_text_file(pdir / "evidence-map.md", SCORE_EVIDENCE_LIMIT)
+    if not profile_text or not evidence_text:
+        return {}
+    fingerprint = _capability_source_fingerprint(profile_text, evidence_text)
+    path = pdir / "capability-ledger.json"
+    cached = _validate_capability_ledger(_read_json(path, {}), fingerprint)
+    if cached is not None:
+        return cached
+    ctx.emit("info", "capability ledger: building from current profile evidence")
+    context = {
+        "capability_ledger_packet": {
+            "candidate_profile_md": profile_text,
+            "evidence_map_md": evidence_text,
+            "source_fingerprint": fingerprint,
+            "expected_artifact": "capability-ledger.json",
+        }
+    }
+    ledger: dict[str, Any] | None = None
+    validation_errors: list[str] = []
+    for attempt in range(2):
+        if attempt:
+            context["capability_ledger_packet"]["repair_errors"] = validation_errors
+            ctx.emit("info", "capability ledger: repairing invalid typed output once")
+        envelope = _provider_run(
+            provider,
+            "capability-ledger",
+            context,
+            _labelled_stream(ctx, f"capability-ledger-{attempt + 1}", on_stream),
+            model_workflow="capability-ledger",
+        )
+        output = _extract_runner_artifact_payload(_result_text(envelope))
+        artifacts = output.get("artifacts", []) if isinstance(output, dict) else []
+        ledger_value: Any = None
+        for artifact in artifacts if isinstance(artifacts, list) else []:
+            if not isinstance(artifact, dict) or artifact.get("path") != "capability-ledger.json":
+                continue
+            ledger_value = artifact.get("json")
+            if ledger_value is None and isinstance(artifact.get("text"), str):
+                try:
+                    ledger_value = json.loads(artifact["text"])
+                except json.JSONDecodeError:
+                    ledger_value = None
+        validation_errors = []
+        ledger = _validate_capability_ledger(
+            ledger_value, fingerprint, validation_errors
+        )
+        if ledger is not None:
+            break
+    if ledger is None:
+        raise RoleScoutError(
+            "capability-ledger build returned invalid typed output after repair: "
+            + "; ".join(validation_errors[:5])
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    ctx.emit("artifact", f"capability ledger ready: {len(ledger['entries'])} experience entries")
+    return ledger
+
+
+def _score_candidate_context(base_context: dict, project: Path | None = None) -> dict[str, Any]:
     pdir_raw = str(base_context.get("profile_dir") or "").strip()
     pdir = Path(pdir_raw) if pdir_raw else None
     return {
@@ -1582,7 +2137,67 @@ def _score_candidate_context(base_context: dict) -> dict[str, str]:
             pdir / "evidence-map.md" if pdir else None,
             SCORE_EVIDENCE_LIMIT,
         ),
+        "decision_policy": decision_policy.load(pdir),
+        "project_preferences": project_meta.load(project) if project else {},
+        "capability_ledger": _read_json(
+            pdir / "capability-ledger.json", {}
+        ) if pdir else {},
     }
+
+
+def _static_scoring_policy() -> dict:
+    return _read_json(
+        Path(__file__).resolve().parents[2] / "references" / "scoring-policy.json", {}
+    )
+
+
+def _score_dependency_fingerprint(
+    job: dict[str, Any],
+    candidate_context: dict[str, Any],
+    criteria: list[dict],
+    scoring_policy: dict[str, Any],
+) -> str:
+    payload = {
+        "contract": SCORE_CONTRACT_VERSION,
+        "job_id": job.get("job_id", ""),
+        "requirement_source_fingerprint": job.get("requirement_source_fingerprint", ""),
+        "requirements": job.get("requirements", []),
+        "preferred_requirements": job.get("preferred_requirements", []),
+        "candidate": candidate_context,
+        "criteria": criteria,
+        "scoring_policy": scoring_policy,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _rating_is_current(
+    rating: dict[str, Any],
+    dependency_fingerprint: str,
+    criteria_names: set[str],
+    expected_requirements: list[dict],
+) -> bool:
+    meta = rating.get("score_meta", {})
+    if not isinstance(meta, dict) or meta.get("dependency_fingerprint") != dependency_fingerprint:
+        return False
+    values = rating.get("ratings", {})
+    if (
+        not isinstance(values, dict) or set(values) != criteria_names
+        or any(not isinstance(value, int) or not 1 <= value <= 5 for value in values.values())
+    ):
+        return False
+    expected_ids = {
+        str(item.get("requirement_id", "")) for item in expected_requirements
+        if isinstance(item, dict) and item.get("requirement_id")
+    }
+    evaluations = rating.get("requirement_evaluations", [])
+    if not isinstance(evaluations, list):
+        return False
+    actual_ids = {
+        str(item.get("requirement_id", "")) for item in evaluations
+        if isinstance(item, dict) and item.get("requirement_id")
+    }
+    return expected_ids == actual_ids
 
 
 def _text_limited(path: Path | None, limit: int = 12000) -> str:
@@ -1612,10 +2227,10 @@ def _glob_texts(base: Path, pattern: str, *, limit_each: int = 5000,
     return out
 
 
-def _focused_groups(project: Path) -> list[dict]:
+def _groups_for_rows(rows: list[dict]) -> list[dict]:
     groups: list[dict] = []
     by_slug: dict[str, dict] = {}
-    for row in _focused_job_rows(project):
+    for row in rows:
         slug = _slug(row.get("job_group", ""), "")
         if not slug:
             slug = "ungrouped"
@@ -1626,6 +2241,48 @@ def _focused_groups(project: Path) -> list[dict]:
             groups.append(group)
         group["jobs"].append(row)
     return groups
+
+
+def _focused_groups(project: Path) -> list[dict]:
+    return _groups_for_rows(_focused_job_rows(project))
+
+
+PREP_DISPOSITIONS = {"pursue", "conditional", "parked"}
+
+
+def _strategy_dispositions(project: Path) -> dict[str, dict[str, str]]:
+    """Return the validated strategy scope, with legacy files defaulting to pursue."""
+    data = _read_json(project / "strategy" / "group-assignments.json", {})
+    rows = data.get("assignments", []) if isinstance(data, dict) else []
+    out: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        job_id = str(row.get("job_id", "")).strip()
+        if not job_id:
+            continue
+        disposition = str(row.get("disposition", "pursue")).strip().lower()
+        if disposition not in PREP_DISPOSITIONS:
+            disposition = "pursue"
+        out[job_id] = {
+            "disposition": disposition,
+            "reason": str(row.get("disposition_reason", "")).strip(),
+        }
+    return out
+
+
+def _groups_for_prep(project: Path, allowed: set[str]) -> tuple[list[dict], list[dict]]:
+    dispositions = _strategy_dispositions(project)
+    eligible: list[dict] = []
+    skipped: list[dict] = []
+    for group in _focused_groups(project):
+        jobs = list(group.get("jobs", []))
+        selected = [row for row in jobs if dispositions.get(
+            str(row.get("job_id", "")), {"disposition": "pursue"}
+        )["disposition"] in allowed]
+        target = eligible if selected else skipped
+        target.append({**group, "jobs": selected or jobs})
+    return eligible, skipped
 
 
 def _processed_jd_rel(job_id: str) -> str:
@@ -1640,9 +2297,10 @@ def _processed_jd_brief(project: Path, row: dict) -> dict:
     return jd_text_cleaner.jd_interview_brief(row, snapshot if isinstance(snapshot, dict) else {})
 
 
-def _prepare_processed_jds(ctx: RunContext) -> dict[str, dict]:
+def _prepare_processed_jds(ctx: RunContext,
+                           rows: list[dict] | None = None) -> dict[str, dict]:
     briefs: dict[str, dict] = {}
-    rows = _focused_job_rows(ctx.project)
+    rows = _focused_job_rows(ctx.project) if rows is None else rows
     if not rows:
         return briefs
     for row in rows:
@@ -1711,16 +2369,113 @@ def _baseline_resume_context(project: Path) -> dict[str, str]:
     }
 
 
+def _latest_resume_source(profile_dir: Path | None) -> Path | None:
+    """Choose the latest user-provided resume, preferring resume-like documents."""
+    if profile_dir is None:
+        return None
+    candidates = []
+    for item in profile_meta.material_files(profile_dir):
+        path = profile_dir / str(item.get("name", ""))
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        suffix_rank = 2 if path.suffix.lower() in {".pdf", ".docx"} else 1
+        name_rank = 2 if re.search(r"(?:resume|curriculum|\bcv\b)", name) else 0
+        candidates.append((name_rank, suffix_rank, int(item.get("mtime", 0)), path))
+    if not candidates:
+        return None
+    # A clearly named resume beats a newer auxiliary note; within that class use
+    # the latest source. PDF/DOCX wins over plain text on equal timestamps.
+    return max(candidates, key=lambda value: value[:3])[3]
+
+
+def _ensure_baseline_extracted(ctx: RunContext, profile_dir: Path | None) -> bool:
+    source = _latest_resume_source(profile_dir)
+    if source is None:
+        ctx.failure_class = ctx.failure_class or "baseline_resume_missing"
+        ctx.emit("validator", "baseline resume extraction: FAIL (no user-provided resume)")
+        return False
+    try:
+        text = source_extract.extract_text(source).strip()
+    except (OSError, ValueError) as exc:
+        text = ""
+        detail = str(exc)
+    else:
+        detail = ""
+    if not text:
+        ctx.failure_class = ctx.failure_class or "baseline_resume_extraction_failure"
+        ctx.emit("validator", "baseline resume extraction: FAIL " +
+                 (f"({detail})" if detail else "(no extractable text)"))
+        return False
+    body = (
+        "# Baseline Resume Extraction\n\n"
+        f"> Source: {source.name}\n"
+        f"> Source mtime: {int(source.stat().st_mtime)}\n"
+        "> Runner-owned; group agents must not overwrite this file.\n\n"
+        + text + "\n"
+    )
+    _write_artifact(ctx, {
+        "type": "artifact",
+        "path": "resumes/baseline-extracted.md",
+        "text": body,
+    })
+    ctx.emit("validator", f"baseline resume extraction: PASS ({source.name})")
+    return True
+
+
 def _resume_group_allowed_artifacts(group_slug: str) -> set[str]:
     group = _slug(group_slug, "ungrouped")
     return {
-        "resumes/baseline-extracted.md",
         f"resumes/{group}/target-brief.json",
         f"resumes/{group}/resume-score.md",
         f"resumes/{group}/resume-draft.md",
         f"resumes/{group}/reasons.json",
         f"resumes/{group}/resume-validation.md",
         f"resumes/{group}/resume-not-generated.md",
+    }
+
+
+def _resume_artifact_contract(group_slug: str) -> dict:
+    """Single machine-readable contract shared by prompt, runner, and gate."""
+    group = _slug(group_slug, "ungrouped")
+    base = f"resumes/{group}"
+    return {
+        "schema": RESUME_ARTIFACT_SCHEMA,
+        "group_slug": group,
+        "active_group": {
+            "required_artifacts": [
+                f"{base}/target-brief.json", f"{base}/resume-score.md",
+                f"{base}/resume-draft.md", f"{base}/reasons.json",
+                f"{base}/resume-validation.md",
+            ],
+            "json_artifacts_use_json_field": True,
+        },
+        "parked_group": {
+            "required_artifacts": [f"{base}/resume-not-generated.md"],
+            "mutually_exclusive_with_active_group": True,
+        },
+        "target_brief": {
+            "schema": RESUME_TARGET_BRIEF_SCHEMA,
+            "required": [
+                "schema", "group", "source_job_ids", "positioning_angle",
+                "requirements", "gaps",
+            ],
+            "requirement_required": [
+                "id", "priority", "text", "keywords", "source_job_ids",
+            ],
+            "priority_enum": ["must", "preferred"],
+            "gap_required": ["requirement_id", "gap"],
+        },
+        "reasons": {
+            "type": "array",
+            "item_required": [
+                "bullet_prefix", "reason", "evidence", "requirement_ids",
+                "source_job_ids", "rewrite_type", "baseline_source_bullet_id",
+            ],
+            "reason_enum": list(RESUME_REASON_VALUES),
+            "rewrite_type_enum": list(RESUME_REWRITE_TYPES),
+        },
+        "lifecycle": ["generated", "validated", "published"],
     }
 
 
@@ -1764,6 +2519,7 @@ def _runner_interview_role_packet(project: Path, pdir: Path | None, role: dict,
         "candidate_profile_md": _text_limited(
             pdir / "candidate-profile.md" if pdir else None, 5000
         ),
+        "decision_policy": decision_policy.load(pdir),
         "evidence_map_md": _text_limited(
             pdir / "evidence-map.md" if pdir else None, 5000
         ),
@@ -1798,6 +2554,7 @@ def _runner_resume_group_packet(project: Path, pdir: Path | None,
         "scope": "single-focused-group",
         "group_slug": slug,
         "expected_artifacts": sorted(_resume_group_allowed_artifacts(slug)),
+        "artifact_contract": _resume_artifact_contract(slug),
         "focused_jobs": _packet_job_rows(jobs),
         "processed_jd_briefs": _load_processed_jds(project, jobs),
         "candidate_profile_md": _text_limited(
@@ -1806,14 +2563,12 @@ def _runner_resume_group_packet(project: Path, pdir: Path | None,
         "evidence_map_md": _text_limited(
             pdir / "evidence-map.md" if pdir else None, 6000
         ),
+        "decision_policy": decision_policy.load(pdir),
         "baseline_resume": _baseline_resume_context(project),
         "target_group_file": _group_file_packet(project, slug, limit=5000),
         "strategy_context": _strategy_support_packet(project),
         "existing_group_resume_files": _glob_texts(
             resume_dir, "*.md", limit_each=3000, max_files=5
-        ),
-        "linkedin_current_md": _text_limited(
-            pdir / "linkedin-current.md" if pdir else None, 5000
         ),
     }
     return packet
@@ -1831,7 +2586,7 @@ def _runner_linkedin_group_packet(project: Path, pdir: Path | None,
         "focused_jobs": _packet_job_rows(jobs),
         "processed_jd_briefs": _load_processed_jds(project, jobs),
         "linkedin_current_md": _text_limited(
-            pdir / "linkedin-current.md" if pdir else None, 20000
+            pdir / "linkedin-current.md" if pdir else None, 50000
         ),
         "candidate_profile_md": _text_limited(
             pdir / "candidate-profile.md" if pdir else None, 6000
@@ -1839,10 +2594,87 @@ def _runner_linkedin_group_packet(project: Path, pdir: Path | None,
         "evidence_map_md": _text_limited(
             pdir / "evidence-map.md" if pdir else None, 6000
         ),
+        "decision_policy": decision_policy.load(pdir),
         "target_group_file": _group_file_packet(project, slug, limit=5000),
         "strategy_context": _strategy_support_packet(project),
         "resume_group_files": _glob_texts(
             project / "resumes" / slug, "*.md", limit_each=3000, max_files=5
+        ),
+    }
+
+
+def _recommended_application_resume(project: Path, row: dict) -> str:
+    group = _slug(row.get("job_group", ""), "")
+    directory = project / "resumes" / group if group else None
+    if directory and directory.is_dir():
+        docx = sorted(directory.glob("*.docx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if docx:
+            return docx[0].relative_to(project).as_posix()
+        draft = directory / "resume-draft.md"
+        if draft.exists():
+            return draft.relative_to(project).as_posix()
+    baseline = project / "resumes" / "baseline-extracted.md"
+    return baseline.relative_to(project).as_posix() if baseline.exists() else ""
+
+
+def _recommended_application_linkedin(project: Path, row: dict) -> str:
+    group = _slug(row.get("job_group", ""), "")
+    review = project / "linkedin" / group / "linkedin-review.md"
+    return review.relative_to(project).as_posix() if group and review.exists() else ""
+
+
+def _application_artifact_path(row: dict) -> str:
+    raw = str(row.get("job_id", "") or "job")
+    digest = hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:8]
+    stem = _slug(raw, "job")[:48].strip("-")
+    return f"applications/{stem}-{digest}/application-instructions.md"
+
+
+def _runner_application_role_packet(project: Path, pdir: Path | None, row: dict,
+                                    route_audit: dict, selected: list[dict]) -> dict:
+    expected = _application_artifact_path(row)
+    same_company = [
+        _packet_job_row(other) for other in selected
+        if other.get("job_id") != row.get("job_id")
+        and _slug(other.get("company", ""), "") == _slug(row.get("company", ""), "")
+    ]
+    prior = project / PurePosixPath(expected)
+    return {
+        "workflow": "apply",
+        "scope": "single-focused-position-read-only-route-audit",
+        "expected_artifact": expected,
+        "role": _packet_job_row(row),
+        "processed_jd_brief": _processed_jd_brief(project, row),
+        "application_route_audit": route_audit,
+        "recommended_resume_path": _recommended_application_resume(project, row),
+        "recommended_linkedin_path": _recommended_application_linkedin(project, row),
+        "candidate_profile_md": _text_limited(
+            pdir / "candidate-profile.md" if pdir else None, 9000
+        ),
+        "evidence_map_md": _text_limited(
+            pdir / "evidence-map.md" if pdir else None, 9000
+        ),
+        "baseline_resume": _baseline_resume_context(project),
+        "decision_policy": decision_policy.load(pdir),
+        "target_group_file": _group_file_packet(
+            project, _slug(row.get("job_group", ""), ""), limit=5000
+        ),
+        "same_company_selected_roles": same_company,
+        "existing_packet": _text_limited(prior, 6000),
+        "artifact_contract": {
+            "exact_path": expected,
+            "exact_count": 1,
+            "store_writes": "Return an empty list; the runner creates/preserves the tracker row atomically.",
+            "required_headings": [
+                "Position summary", "Current posting state", "Application route",
+                "Required materials", "Field-by-field guidance", "Sensitive fields",
+                "Step-by-step user instructions", "What to save after submission",
+                "Tracker update recommendation",
+            ],
+        },
+        "safety_boundary": (
+            "Local instructions only. Never authenticate, enter/transmit candidate data, upload a "
+            "file, click Next/Submit/Apply, accept terms, create an account, or claim submission."
         ),
     }
 
@@ -1858,8 +2690,17 @@ def _runner_context_packet(project: Path, pdir: Path | None,
         "evidence_map_md": _text_limited(
             pdir / "evidence-map.md" if pdir else None, 9000
         ),
+        "decision_policy": decision_policy.load(pdir),
     }
     if workflow == "prep-strategy":
+        all_focused = focused
+        focused = _strategy_focused_job_rows(project)
+        groups = _groups_for_rows(focused)
+        scoped_ids = {str(row.get("job_id", "")) for row in focused}
+        excluded_unscored = [
+            str(row.get("job_id", "")) for row in all_focused
+            if str(row.get("job_id", "")) not in scoped_ids
+        ]
         current_group_files = [
             {"group_slug": group["slug"], "text": _group_file_packet(project, group["slug"], limit=4500)}
             for group in groups if group.get("slug") and group.get("slug") != "ungrouped"
@@ -1867,6 +2708,8 @@ def _runner_context_packet(project: Path, pdir: Path | None,
         return {
             "workflow": workflow,
             **base_profile,
+            "scope": "focused-and-current-scored-only",
+            "excluded_unscored_job_ids": excluded_unscored,
             "focused_jobs": _packet_job_rows(focused),
             "focused_groups": [{"slug": g["slug"], "job_ids": [j.get("job_id", "") for j in g["jobs"]]} for g in groups],
             "processed_jd_briefs": _load_processed_jds(project, focused),
@@ -1901,7 +2744,7 @@ def _runner_context_packet(project: Path, pdir: Path | None,
     }
     if workflow == "prep-linkedin":
         packet["linkedin_current_md"] = _text_limited(
-            pdir / "linkedin-current.md" if pdir else None, 20000
+            pdir / "linkedin-current.md" if pdir else None, 50000
         )
         packet["resume_files"] = _glob_texts(
             project / "resumes", "**/*.md", limit_each=6000, max_files=30
@@ -1940,26 +2783,51 @@ def _merge_score_ratings(project: Path, incoming: list[dict]) -> int:
         return 0
     strategy_dir = project / "strategy"
     strategy_dir.mkdir(parents=True, exist_ok=True)
-    existing = _load_score_ratings(project)
-    by_id = {
-        str(item.get("job_id", "")).strip(): item
-        for item in existing if str(item.get("job_id", "")).strip()
-    }
-    changed = 0
+    # A completed score pass is a snapshot of the current visible job set.
+    # Retaining prior partial/removed rows lets stale malformed ratings poison
+    # deterministic finalization even after the current pass is complete.
+    by_id: dict[str, dict] = {}
     for item in incoming:
         job_id = str(item.get("job_id", "")).strip()
         ratings = item.get("ratings", {})
         if not job_id or not isinstance(ratings, dict):
             continue
         by_id[job_id] = item
-        changed += 1
+    changed = len(by_id)
     if changed:
         out = [by_id[key] for key in sorted(by_id)]
-        (strategy_dir / "job-ratings.json").write_text(
+        path = strategy_dir / "job-ratings.json"
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(
             json.dumps(out, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+        os.replace(tmp, path)
     return changed
+
+
+def _write_score_freshness(
+    project: Path,
+    *,
+    current_ids: set[str],
+    unresolved_ids: set[str],
+    dependency_fingerprints: dict[str, str],
+) -> None:
+    payload = {
+        "schema": "rolescout-score-freshness-v1",
+        "contract_version": SCORE_CONTRACT_VERSION,
+        "generated_at": _now(),
+        "current_job_ids": sorted(current_ids),
+        "unresolved_job_ids": sorted(unresolved_ids),
+        "dependency_fingerprints": {
+            key: dependency_fingerprints[key] for key in sorted(current_ids)
+        },
+    }
+    path = project / "strategy" / "score-freshness.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _score_batch_result_text(envelope: dict) -> str:
@@ -1994,6 +2862,9 @@ def _validate_score_batch_ratings(
     ratings: list[dict],
     expected_ids: set[str],
     criteria_names: set[str],
+    policy_specs: dict[str, dict] | None = None,
+    requirements_by_job: dict[str, list[dict]] | None = None,
+    diagnostics: dict[str, list[str]] | None = None,
 ) -> tuple[dict[str, dict], set[str], list[str]]:
     accepted: dict[str, dict] = {}
     issues: list[str] = []
@@ -2009,15 +2880,143 @@ def _validate_score_batch_ratings(
         rating_values = item.get("ratings", {})
         if not isinstance(rating_values, dict):
             incomplete += 1
+            if diagnostics is not None:
+                diagnostics[job_id] = ["ratings must be an object"]
             continue
-        missing_criteria = criteria_names - set(str(k) for k in rating_values)
+        normalized_values: dict[str, int] = {}
+        nested_rationale: dict[str, str] = {}
+        for key, value in rating_values.items():
+            name = str(key)
+            if isinstance(value, dict):
+                score = value.get("score")
+                rationale = str(value.get("rationale", "")).strip()
+                if rationale:
+                    nested_rationale[name] = rationale
+                value = score
+            if isinstance(value, int) and 1 <= value <= 5:
+                normalized_values[name] = value
+        rating_keys = {str(k) for k in rating_values}
+        missing_criteria = criteria_names - rating_keys
+        extra_criteria = rating_keys - criteria_names
         bad_values = [
             key for key, value in rating_values.items()
-            if key in criteria_names and (not isinstance(value, int) or not 1 <= value <= 5)
+            if key in criteria_names and key not in normalized_values
         ]
-        if missing_criteria or bad_values:
+        expected_policy_ids = set(policy_specs or {})
+        evaluations = item.get("policy_evaluations", [])
+        if not isinstance(evaluations, list):
+            evaluations = []
+        normalized_evaluations: list[dict[str, str]] = []
+        seen_policy_ids: set[str] = set()
+        bad_policy_evaluation = False
+        for evaluation in evaluations:
+            if not isinstance(evaluation, dict):
+                bad_policy_evaluation = True
+                continue
+            policy_id = str(evaluation.get("policy_id", "")).strip()
+            outcome = str(evaluation.get("outcome", "")).strip().lower()
+            confidence = str(evaluation.get("confidence", "")).strip().lower()
+            evidence = str(evaluation.get("evidence", "")).strip()
+            if (
+                policy_id not in expected_policy_ids
+                or policy_id in seen_policy_ids
+                or outcome not in {"satisfied", "violated", "uncertain"}
+                or confidence not in {"high", "medium", "low"}
+                or not evidence
+            ):
+                bad_policy_evaluation = True
+                continue
+            seen_policy_ids.add(policy_id)
+            normalized_evaluations.append({
+                "policy_id": policy_id,
+                "outcome": outcome,
+                "confidence": confidence,
+                "evidence": evidence[:160],
+            })
+        if seen_policy_ids != expected_policy_ids:
+            bad_policy_evaluation = True
+        expected_requirements = {
+            str(req.get("requirement_id", "")): req
+            for req in (requirements_by_job or {}).get(job_id, [])
+            if isinstance(req, dict) and str(req.get("requirement_id", ""))
+        }
+        evaluations = item.get("requirement_evaluations", [])
+        if not isinstance(evaluations, list):
+            evaluations = []
+        normalized_requirement_evaluations: list[dict[str, Any]] = []
+        seen_requirements: set[str] = set()
+        bad_requirement_evaluation = False
+        for evaluation in evaluations:
+            if not isinstance(evaluation, dict):
+                bad_requirement_evaluation = True
+                continue
+            requirement_id = str(evaluation.get("requirement_id", "")).strip()
+            coverage = str(evaluation.get("coverage", "")).strip().lower()
+            confidence = str(evaluation.get("confidence", "")).strip().lower()
+            reason = str(evaluation.get("reason", "")).strip()
+            evidence_ids = evaluation.get("evidence_ids", [])
+            direct_months = evaluation.get("direct_months", 0)
+            adjacent_months = evaluation.get("adjacent_months", 0)
+            if (
+                requirement_id not in expected_requirements
+                or requirement_id in seen_requirements
+                or coverage not in {"met", "partial", "unmet", "unknown"}
+                or confidence not in {"high", "medium", "low"}
+                or not isinstance(evidence_ids, list)
+                or not isinstance(direct_months, int) or direct_months < 0
+                or not isinstance(adjacent_months, int) or adjacent_months < 0
+                or not reason
+            ):
+                bad_requirement_evaluation = True
+                continue
+            seen_requirements.add(requirement_id)
+            normalized_requirement_evaluations.append({
+                "requirement_id": requirement_id,
+                "coverage": coverage,
+                "confidence": confidence,
+                "direct_months": direct_months,
+                "adjacent_months": adjacent_months,
+                "evidence_ids": [str(value)[:40] for value in evidence_ids[:12]],
+                "reason": reason[:160],
+            })
+        if seen_requirements != set(expected_requirements):
+            bad_requirement_evaluation = True
+        if (missing_criteria or extra_criteria or bad_values
+                or bad_policy_evaluation or bad_requirement_evaluation):
             incomplete += 1
-        accepted[job_id] = item
+            if diagnostics is not None:
+                details: list[str] = []
+                if missing_criteria:
+                    details.append("missing criteria: " + ", ".join(sorted(missing_criteria)))
+                if extra_criteria:
+                    details.append("unexpected criteria: " + ", ".join(sorted(extra_criteria)))
+                if bad_values:
+                    details.append("non-integer criteria: " + ", ".join(sorted(bad_values)))
+                if bad_policy_evaluation:
+                    details.append(
+                        "policy IDs must exactly equal: " + ", ".join(sorted(expected_policy_ids))
+                    )
+                if bad_requirement_evaluation:
+                    details.append(
+                        "requirement IDs must exactly equal: "
+                        + ", ".join(sorted(expected_requirements))
+                    )
+                diagnostics[job_id] = details
+            continue
+        normalized = dict(item)
+        normalized["ratings"] = {
+            name: normalized_values[name] for name in sorted(criteria_names)
+        }
+        rationale = item.get("rationale", {})
+        if not isinstance(rationale, dict):
+            rationale = {}
+        normalized["rationale"] = {
+            name: str(rationale.get(name) or nested_rationale.get(name) or "").strip()
+            for name in sorted(criteria_names)
+        }
+        normalized["policy_evaluations"] = normalized_evaluations
+        normalized["requirement_evaluations"] = normalized_requirement_evaluations
+        accepted[job_id] = normalized
     missing = expected_ids - set(accepted)
     if unknown:
         issues.append(f"unknown_job_id={unknown}")
@@ -2028,6 +3027,159 @@ def _validate_score_batch_ratings(
     if missing:
         issues.append(f"missing={len(missing)}")
     return accepted, missing, issues
+
+
+def _active_score_policy_specs(candidate_context: dict) -> dict[str, dict]:
+    policy = candidate_context.get("decision_policy", {})
+    policies = policy.get("policies", []) if isinstance(policy, dict) else []
+    return {
+        str(item.get("id", "")).strip(): item
+        for item in policies
+        if isinstance(item, dict) and str(item.get("id", "")).strip()
+    }
+
+
+def _apply_policy_evaluation_enforcement(
+    accepted: dict[str, dict],
+    candidate_context: dict,
+) -> None:
+    """Translate model policy outcomes into configured scoring criteria.
+
+    This layer never interprets titles or policy prose. The model owns semantic
+    judgment; deterministic code only applies the declared criterion mapping.
+    """
+    specs = _active_score_policy_specs(candidate_context)
+    outcome_rating = {"violated": 1, "uncertain": 3, "satisfied": 5}
+    for rating in accepted.values():
+        values = rating.get("ratings", {})
+        rationale = rating.get("rationale", {})
+        evaluations = rating.get("policy_evaluations", [])
+        if not isinstance(values, dict) or not isinstance(evaluations, list):
+            continue
+        for evaluation in evaluations:
+            if not isinstance(evaluation, dict):
+                continue
+            spec = specs.get(str(evaluation.get("policy_id", "")))
+            if not isinstance(spec, dict):
+                continue
+            criterion = str(spec.get("criterion", "")).strip()
+            outcome = str(evaluation.get("outcome", "")).strip().lower()
+            if criterion not in values or outcome not in outcome_rating:
+                continue
+            values[criterion] = outcome_rating[outcome]
+            if isinstance(rationale, dict):
+                rationale[criterion] = str(evaluation.get("evidence", ""))[:160]
+
+
+def _seed_derived_score_criteria(
+    accepted: dict[str, dict],
+    final_criteria_names: set[str],
+) -> None:
+    for rating in accepted.values():
+        values = rating.setdefault("ratings", {})
+        rationale = rating.setdefault("rationale", {})
+        for name in DERIVED_SCORE_CRITERIA & final_criteria_names:
+            values[name] = 5
+            rationale[name] = "Runner-derived from normalized requirement evidence."
+
+
+def _apply_requirement_evaluation_enforcement(
+    accepted: dict[str, dict],
+    jobs_by_id: dict[str, dict],
+) -> None:
+    """Enforce model requirement coverage without reinterpreting JD semantics."""
+    for job_id, rating in accepted.items():
+        values = rating.get("ratings", {})
+        rationale = rating.get("rationale", {})
+        evaluations = rating.get("requirement_evaluations", [])
+        specs = {
+            str(req.get("requirement_id", "")): req
+            for req in jobs_by_id.get(job_id, {}).get("requirements", [])
+            if isinstance(req, dict)
+        }
+        if not isinstance(values, dict) or not isinstance(evaluations, list):
+            continue
+        gate = 5
+        gate_reason = "All evaluated central minimum requirements are met."
+        for evaluation in evaluations:
+            if not isinstance(evaluation, dict):
+                continue
+            spec = specs.get(str(evaluation.get("requirement_id", "")), {})
+            obligation = str(spec.get("obligation", ""))
+            importance = str(spec.get("importance", ""))
+            coverage = str(evaluation.get("coverage", ""))
+            central_minimum = (
+                obligation in {"minimum_required", "required"}
+                and importance == "central"
+            )
+            eligibility = importance == "eligibility"
+            if coverage == "unmet" and (central_minimum or eligibility):
+                gate = 1
+                gate_reason = str(evaluation.get("reason", ""))[:160]
+                if "role_fit" in values:
+                    values["role_fit"] = min(int(values["role_fit"]), 2)
+                if "likelihood" in values:
+                    values["likelihood"] = min(int(values["likelihood"]), 2)
+            elif coverage == "unknown" and (central_minimum or eligibility) and gate > 1:
+                gate = min(gate, 3)
+                gate_reason = str(evaluation.get("reason", ""))[:160]
+                if "role_fit" in values:
+                    values["role_fit"] = min(int(values["role_fit"]), 3)
+                if "likelihood" in values:
+                    values["likelihood"] = min(int(values["likelihood"]), 3)
+        if "minimum_requirement" in values:
+            values["minimum_requirement"] = gate
+            if isinstance(rationale, dict):
+                rationale["minimum_requirement"] = gate_reason
+
+
+def _apply_deterministic_qualification_gates(
+    accepted: dict[str, dict],
+    jobs_by_id: dict[str, dict],
+    candidate_context: dict,
+) -> None:
+    """Force only high-confidence hard-credential mismatches.
+
+    Requirement extraction already excludes preferred/nice-to-have sections.
+    Broad experience/field matching remains semantic; deterministic overrides
+    are limited to credentials whose absence is unambiguous in profile text.
+    """
+    candidate = " ".join([
+        str(candidate_context.get("candidate_profile_md", "")),
+        str(candidate_context.get("evidence_map_md", "")),
+    ]).lower()
+    checks = (
+        (re.compile(r"\b(?:ph\.?d\.?|doctorate|doctoral degree)\b", re.I),
+         re.compile(r"\b(?:ph\.?d\.?|doctorate|doctoral degree)\b", re.I), "PhD/doctorate"),
+        (re.compile(r"\b(?:cpa|certified public accountant)\b", re.I),
+         re.compile(r"\b(?:cpa|certified public accountant)\b", re.I), "CPA"),
+        (re.compile(r"\b(?:bar admission|admitted to (?:the )?bar)\b", re.I),
+         re.compile(r"\b(?:bar admission|admitted to (?:the )?bar)\b", re.I), "bar admission"),
+        (re.compile(r"\bsecurity clearance\b", re.I),
+         re.compile(r"\bsecurity clearance\b", re.I), "security clearance"),
+    )
+    for job_id, rating in accepted.items():
+        job = jobs_by_id.get(job_id, {})
+        essential = str(job.get("essential_qualifications", ""))
+        values = rating.get("ratings", {})
+        rationale = rating.get("rationale", {})
+        if not isinstance(values, dict):
+            continue
+        if "essential_qualification" not in values:
+            continue
+        if not essential.strip():
+            values["essential_qualification"] = 5
+            if isinstance(rationale, dict):
+                rationale["essential_qualification"] = "No explicit must-have credential extracted."
+            continue
+        missing = [label for req, evidence, label in checks
+                   if req.search(essential) and not evidence.search(candidate)]
+        if missing:
+            values["essential_qualification"] = 1
+            if isinstance(rationale, dict):
+                rationale["essential_qualification"] = (
+                    "Missing explicit must-have: " + ", ".join(missing)
+                )[:80]
 
 
 def _write_basic_score_group_artifacts(project: Path, ratings: list[dict]) -> None:
@@ -2089,30 +3241,147 @@ def _write_basic_score_group_artifacts(project: Path, ratings: list[dict]) -> No
     )
 
 
+def _normalization_errors_by_job(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    return {
+        str(row.get("job_id", "")): [
+            f"requirement normalization: {str(issue)}"
+            for issue in row.get("requirement_coverage_issues", [])
+        ]
+        for row in rows
+        if row.get("job_id") and row.get("requirement_coverage_issues")
+    }
+
+
 def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream) -> dict:
-    rows = _read_csv_dicts(_score_view_path(ctx.project))
-    jobs = [_score_compact_job(row) for row in rows if row.get("job_id")]
+    _ensure_capability_ledger(ctx, provider, base_context, on_stream)
+    rows = _score_rows(ctx.project)
+    normalization_errors = _normalization_errors_by_job(rows)
+    all_jobs = [_score_compact_job(row) for row in rows if row.get("job_id")]
+    jobs = [
+        job for job in all_jobs
+        if str(job.get("job_id", "")) not in normalization_errors
+    ]
     criteria = _score_criteria(ctx.project)
-    if not jobs or not criteria:
+    if not all_jobs or not criteria:
         return {"events": [], "usage": {}, "ratings": 0}
 
-    batches = _make_score_batches(jobs)
-    candidate_context = _score_candidate_context(base_context)
-    criteria_names = {str(item.get("name", "")).strip() for item in criteria if item.get("name")}
-    jobs_by_id = {str(job.get("job_id", "")).strip(): job for job in jobs}
+    candidate_context = _score_candidate_context(base_context, ctx.project)
+    policy_specs = _active_score_policy_specs(candidate_context)
+    criteria_names = {
+        str(item.get("name", "")).strip() for item in criteria if item.get("name")
+    }
+    model_criteria = [
+        item for item in criteria
+        if str(item.get("name", "")).strip() not in DERIVED_SCORE_CRITERIA
+    ]
+    model_criteria_names = {
+        str(item.get("name", "")).strip() for item in model_criteria if item.get("name")
+    }
+    scoring_policy = _static_scoring_policy()
+    jobs_by_id = {str(job.get("job_id", "")).strip(): job for job in all_jobs}
+    scoreable_ids = {str(job.get("job_id", "")).strip() for job in jobs}
+    requirements_by_job = {
+        job_id: job.get("requirements", [])
+        for job_id, job in jobs_by_id.items()
+    }
+    dependency_fingerprints = {
+        job_id: _score_dependency_fingerprint(
+            job, candidate_context, criteria, scoring_policy
+        )
+        for job_id, job in jobs_by_id.items()
+    }
+    snapshot_raw = json.dumps(
+        {
+            "contract": SCORE_CONTRACT_VERSION,
+            "dependencies": dependency_fingerprints,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    snapshot_fingerprint = hashlib.sha256(snapshot_raw.encode("utf-8")).hexdigest()
+    checkpoint_key = f"score-{snapshot_fingerprint[:24]}"
+    score_staging.begin(
+        ctx.project,
+        checkpoint_key=checkpoint_key,
+        run_id=ctx.run_id or checkpoint_key,
+        contract_version=SCORE_CONTRACT_VERSION,
+        snapshot_fingerprint=snapshot_fingerprint,
+        total_jobs=len(jobs_by_id),
+    )
+    # Keep the exact score snapshot on the run context so cancellation can
+    # promote only dependency-current checkpoint rows without recomputing or
+    # trusting stale staging data.
+    ctx.score_checkpoint_key = checkpoint_key
+    ctx.score_dependency_fingerprints = dependency_fingerprints
+    ctx.score_jobs_by_id = jobs_by_id
+    ctx.score_requirements_by_job = requirements_by_job
+    ctx.score_criteria_names = criteria_names
+    if normalization_errors:
+        score_staging.checkpoint_batch(
+            ctx.project,
+            checkpoint_key=checkpoint_key,
+            batch_id="normalization-gate",
+            dependency_fingerprints=dependency_fingerprints,
+            validated={},
+            invalid=normalization_errors,
+        )
+        sample = ", ".join(sorted(normalization_errors)[:5])
+        ctx.mark_partial(
+            "score_requirement_normalization",
+            f"{len(normalization_errors)} row(s) quarantined before scoring; "
+            f"validated rows will continue and quarantined rows keep prior DB scores: {sample}",
+        )
+        ctx.emit(
+            "validator",
+            f"requirement normalization gate: QUARANTINED "
+            f"{len(normalization_errors)}/{len(all_jobs)} row(s)",
+        )
+    cached_by_id: dict[str, dict] = {}
+    for rating in _load_score_ratings(ctx.project):
+        job_id = str(rating.get("job_id", "")).strip()
+        if job_id in scoreable_ids and _rating_is_current(
+            rating,
+            dependency_fingerprints[job_id],
+            criteria_names,
+            requirements_by_job[job_id],
+        ):
+            cached_by_id[job_id] = rating
+    resumed_by_id: dict[str, dict] = {}
+    for job_id, rating in score_staging.load_validated(
+        ctx.project,
+        checkpoint_key=checkpoint_key,
+        dependency_fingerprints=dependency_fingerprints,
+    ).items():
+        if job_id not in cached_by_id and _rating_is_current(
+            rating,
+            dependency_fingerprints[job_id],
+            criteria_names,
+            requirements_by_job[job_id],
+        ):
+            resumed_by_id[job_id] = rating
+    available_ids = set(cached_by_id) | set(resumed_by_id)
+    pending_jobs = [
+        job for job in jobs if str(job.get("job_id", "")) not in available_ids
+    ]
+    batches = _make_score_batches(pending_jobs)
     ctx.emit(
         "info",
-        f"score batch evaluation: visible_rows={len(jobs)} "
-        f"batches={len(batches)} max_jobs={SCORE_BATCH_MAX_JOBS} "
-        f"workers={SCORE_BATCH_WORKERS}",
+        f"score batch evaluation: visible_rows={len(all_jobs)} scoreable={len(jobs)} "
+        f"cached={len(cached_by_id)} "
+        f"resumed={len(resumed_by_id)} checkpoint={checkpoint_key} "
+        f"stale={len(pending_jobs)} batches={len(batches)} max_jobs={SCORE_BATCH_MAX_JOBS} "
+        f"max_requirements={SCORE_BATCH_MAX_REQUIREMENTS} "
+        f"workers={SCORE_BATCH_WORKERS} normalization_quarantined={len(normalization_errors)}",
     )
 
     def _one(
         pass_name: str,
         index: int,
         total: int,
-        batch: list[dict[str, str]],
-    ) -> tuple[str, int, list[dict[str, str]], list[dict], dict]:
+        batch: list[dict[str, Any]],
+        repair: dict[str, Any] | None = None,
+    ) -> tuple[str, int, list[dict[str, Any]], list[dict], dict]:
         batch_context = dict(base_context)
         batch_context.update({
             "score_batch": {
@@ -2120,8 +3389,11 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
                 "total": total,
                 "pass": pass_name,
                 "jobs": batch,
-                "criteria": criteria,
+                "criteria": model_criteria,
+                "derived_criteria": sorted(DERIVED_SCORE_CRITERIA & criteria_names),
                 "candidate": candidate_context,
+                "scoring_policy": scoring_policy,
+                "repair": repair or {},
             }
         })
         label = f"score-{pass_name}-{index:03d}"
@@ -2137,6 +3409,7 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
 
     accepted_by_id: dict[str, dict] = {}
     missing_after_first: set[str] = set()
+    validation_errors_by_id: dict[str, list[str]] = {}
     issue_count = 0
     envelope: dict = {"events": [], "usage": {}}
     with ThreadPoolExecutor(max_workers=SCORE_BATCH_WORKERS) as pool:
@@ -2145,6 +3418,12 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
             for i, batch in enumerate(batches, start=1)
         }
         for fut in as_completed(futures):
+            if ctx.cancel_event is not None and ctx.cancel_event.is_set():
+                # Executor.__exit__ waits for queued futures unless they are
+                # cancelled explicitly. Without this, Stop appears frozen while
+                # hundreds of already-submitted score batches keep running.
+                for pending in futures:
+                    pending.cancel()
             ctx.check_cancelled()
             index = futures[fut]
             try:
@@ -2156,13 +3435,50 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
                     job_id = str(job.get("job_id", "")).strip()
                     if job_id:
                         missing_after_first.add(job_id)
+                score_staging.checkpoint_batch(
+                    ctx.project,
+                    checkpoint_key=checkpoint_key,
+                    batch_id=f"batch-{index:03d}",
+                    dependency_fingerprints=dependency_fingerprints,
+                    validated={},
+                    invalid={
+                        str(job.get("job_id", "")): [f"provider failure: {str(exc)[:300]}"]
+                        for job in batches[index - 1] if job.get("job_id")
+                    },
+                )
                 continue
             expected_ids = {str(job.get("job_id", "")).strip() for job in batch if job.get("job_id")}
             accepted, missing, issues = _validate_score_batch_ratings(
-                ratings, expected_ids, criteria_names
+                ratings, expected_ids, model_criteria_names, policy_specs,
+                requirements_by_job, validation_errors_by_id
             )
+            _seed_derived_score_criteria(accepted, criteria_names)
+            _apply_policy_evaluation_enforcement(accepted, candidate_context)
+            _apply_requirement_evaluation_enforcement(accepted, jobs_by_id)
+            _apply_deterministic_qualification_gates(
+                accepted, jobs_by_id, candidate_context
+            )
+            for job_id, rating in accepted.items():
+                rating["score_meta"] = {
+                    "contract_version": SCORE_CONTRACT_VERSION,
+                    "dependency_fingerprint": dependency_fingerprints[job_id],
+                    "scored_at": _now(),
+                }
             accepted_by_id.update(accepted)
             missing_after_first.update(missing)
+            score_staging.checkpoint_batch(
+                ctx.project,
+                checkpoint_key=checkpoint_key,
+                batch_id=f"batch-{index:03d}",
+                dependency_fingerprints=dependency_fingerprints,
+                validated=accepted,
+                invalid={
+                    job_id: validation_errors_by_id.get(
+                        job_id, ["job missing from evaluator output"]
+                    )
+                    for job_id in missing
+                },
+            )
             if issues:
                 issue_count += 1
                 ctx.emit("info", f"score batch {index}/{len(batches)} validation: {', '.join(issues)}")
@@ -2170,7 +3486,7 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
             ctx.emit(
                 "progress",
                 f"score batch {index}/{len(batches)} accepted "
-                f"{len(accepted)}/{len(expected_ids)} rating(s)",
+                f"{len(accepted)}/{len(expected_ids)} rating(s); checkpointed",
             )
 
     retry_ids = sorted(job_id for job_id in missing_after_first if job_id not in accepted_by_id)
@@ -2179,6 +3495,7 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
         for i in range(0, len(retry_ids), SCORE_BATCH_RETRY_JOBS)
     ]
     retry_batches = [batch for batch in retry_batches if batch]
+    ctx.check_cancelled()
     if retry_batches:
         ctx.emit(
             "info",
@@ -2186,11 +3503,29 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
             f"retry_batches={len(retry_batches)} retry_size={SCORE_BATCH_RETRY_JOBS}",
         )
         with ThreadPoolExecutor(max_workers=SCORE_BATCH_WORKERS) as pool:
-            futures = {
-                pool.submit(_one, "retry", i, len(retry_batches), batch): i
-                for i, batch in enumerate(retry_batches, start=1)
-            }
+            futures = {}
+            for i, batch in enumerate(retry_batches, start=1):
+                job = batch[0]
+                job_id = str(job.get("job_id", ""))
+                repair = {
+                    "validation_errors": [
+                        *validation_errors_by_id.get(job_id, []),
+                    ] or ["previous output omitted this job entirely"],
+                    "job_id": job_id,
+                    "expected_rating_criteria": sorted(model_criteria_names),
+                    "expected_policy_ids": sorted(policy_specs),
+                    "expected_requirement_ids": [
+                        str(item.get("requirement_id", ""))
+                        for item in requirements_by_job.get(job_id, [])
+                    ],
+                }
+                futures[pool.submit(
+                    _one, "repair", i, len(retry_batches), batch, repair
+                )] = i
             for fut in as_completed(futures):
+                if ctx.cancel_event is not None and ctx.cancel_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
                 ctx.check_cancelled()
                 index = futures[fut]
                 try:
@@ -2198,12 +3533,53 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
                 except Exception as exc:
                     ctx.mark_partial(f"score_retry_{index}", str(exc)[:500])
                     ctx.emit("info", f"score retry {index}/{len(retry_batches)} failed: {str(exc)[:240]}")
+                    batch = retry_batches[index - 1]
+                    score_staging.checkpoint_batch(
+                        ctx.project,
+                        checkpoint_key=checkpoint_key,
+                        batch_id=f"repair-{index:03d}",
+                        dependency_fingerprints=dependency_fingerprints,
+                        validated={},
+                        invalid={
+                            str(job.get("job_id", "")): [
+                                f"repair provider failure: {str(exc)[:300]}"
+                            ]
+                            for job in batch if job.get("job_id")
+                        },
+                    )
                     continue
                 expected_ids = {str(job.get("job_id", "")).strip() for job in batch if job.get("job_id")}
+                repair_diagnostics: dict[str, list[str]] = {}
                 accepted, missing, issues = _validate_score_batch_ratings(
-                    ratings, expected_ids, criteria_names
+                    ratings, expected_ids, model_criteria_names, policy_specs,
+                    requirements_by_job, repair_diagnostics
                 )
+                _seed_derived_score_criteria(accepted, criteria_names)
+                _apply_policy_evaluation_enforcement(accepted, candidate_context)
+                _apply_requirement_evaluation_enforcement(accepted, jobs_by_id)
+                _apply_deterministic_qualification_gates(
+                    accepted, jobs_by_id, candidate_context
+                )
+                for job_id, rating in accepted.items():
+                    rating["score_meta"] = {
+                        "contract_version": SCORE_CONTRACT_VERSION,
+                        "dependency_fingerprint": dependency_fingerprints[job_id],
+                        "scored_at": _now(),
+                    }
                 accepted_by_id.update(accepted)
+                score_staging.checkpoint_batch(
+                    ctx.project,
+                    checkpoint_key=checkpoint_key,
+                    batch_id=f"repair-{index:03d}",
+                    dependency_fingerprints=dependency_fingerprints,
+                    validated=accepted,
+                    invalid={
+                        job_id: repair_diagnostics.get(
+                            job_id, ["job missing from repair output"]
+                        )
+                        for job_id in missing
+                    },
+                )
                 if issues:
                     issue_count += 1
                     ctx.emit(
@@ -2219,33 +3595,157 @@ def _run_score_batches(ctx: RunContext, provider, base_context: dict, on_stream)
                 ctx.emit(
                     "progress",
                     f"score retry {index}/{len(retry_batches)} accepted "
-                    f"{len(accepted)}/{len(expected_ids)} rating(s)",
+                    f"{len(accepted)}/{len(expected_ids)} rating(s); checkpointed",
                 )
 
-    all_ratings = list(accepted_by_id.values())
-    unresolved = len(jobs_by_id) - len(accepted_by_id)
+    ctx.check_cancelled()
+    current_by_id = {**cached_by_id, **resumed_by_id, **accepted_by_id}
+    unresolved_ids = set(jobs_by_id) - set(current_by_id)
+    all_ratings = [current_by_id[key] for key in sorted(current_by_id)]
     changed = _merge_score_ratings(ctx.project, all_ratings)
+    _write_score_freshness(
+        ctx.project,
+        current_ids=set(current_by_id),
+        unresolved_ids=unresolved_ids,
+        dependency_fingerprints=dependency_fingerprints,
+    )
     _write_basic_score_group_artifacts(ctx.project, all_ratings)
+    unresolved = len(unresolved_ids)
+    score_staging.finish(
+        ctx.project, checkpoint_key=checkpoint_key, unresolved=unresolved
+    )
     ctx.validator_results.append({
         "validator": "score_batch_evaluation",
         "target": ctx.project.name,
         "returncode": 0 if changed else 2,
         "output": (
-            f"{changed} rating(s) merged from {len(batches)} batch(es); "
+            f"{len(accepted_by_id)} refreshed, {len(cached_by_id)} cached, "
+            f"{len(resumed_by_id)} resumed, "
+            f"{changed} current rating(s) committed from {len(batches)} batch(es); "
             f"retry_batches={len(retry_batches)} unresolved={unresolved} "
-            f"validation_issue_batches={issue_count}"
+            f"validation_issue_batches={issue_count} "
+            f"normalization_quarantined={len(normalization_errors)}"
         ),
     })
     if unresolved:
-        ctx.mark_partial("score_batch_coverage", f"{unresolved} row(s) left for finalizer fallback")
-    ctx.emit("artifact", f"score batch ratings merged: {changed}; unresolved={unresolved}")
+        ctx.mark_partial(
+            "score_batch_coverage",
+            f"{unresolved} row(s) unresolved; validated current rows were committed "
+            "atomically and prior DB scores remain unchanged for unresolved rows",
+        )
+    ctx.emit(
+        "artifact",
+        f"score ratings current={changed}; refreshed={len(accepted_by_id)}; "
+        f"cached={len(cached_by_id)}; resumed={len(resumed_by_id)}; "
+        f"unresolved={unresolved}",
+    )
     envelope["ratings"] = changed
+    envelope["refreshed_ratings"] = len(accepted_by_id)
+    envelope["resumed_ratings"] = len(resumed_by_id)
+    envelope["unresolved_ratings"] = unresolved
+    envelope["checkpoint_key"] = checkpoint_key
     return envelope
 
 
-def _finalize_score(ctx: RunContext) -> None:
+def _salvage_score_checkpoint(ctx: RunContext) -> int:
+    """Publish dependency-current validated rows after an interrupted score run."""
+    latest = score_staging.latest_summary(ctx.project)
+    checkpoint_key = str(
+        getattr(ctx, "score_checkpoint_key", "")
+        or latest.get("checkpoint_key", "")
+    )
+    if not checkpoint_key:
+        return 0
+
+    jobs_by_id = getattr(ctx, "score_jobs_by_id", None)
+    dependency_fingerprints = getattr(ctx, "score_dependency_fingerprints", None)
+    requirements_by_job = getattr(ctx, "score_requirements_by_job", None)
+    criteria_names = getattr(ctx, "score_criteria_names", None)
+    if not all(isinstance(value, dict) for value in (
+        jobs_by_id, dependency_fingerprints, requirements_by_job
+    )) or not isinstance(criteria_names, set):
+        rows = _score_rows(ctx.project)
+        all_jobs = [_score_compact_job(row) for row in rows if row.get("job_id")]
+        jobs_by_id = {
+            str(job.get("job_id", "")).strip(): job for job in all_jobs
+            if str(job.get("job_id", "")).strip()
+        }
+        criteria = _score_criteria(ctx.project)
+        criteria_names = {
+            str(item.get("name", "")).strip() for item in criteria if item.get("name")
+        }
+        from . import preflight as _pf
+        pdir = _pf.profile_dir(ctx.project)
+        candidate_context = _score_candidate_context(
+            {"profile_dir": str(pdir) if pdir else ""}, ctx.project
+        )
+        scoring_policy = _static_scoring_policy()
+        dependency_fingerprints = {
+            job_id: _score_dependency_fingerprint(
+                job, candidate_context, criteria, scoring_policy
+            )
+            for job_id, job in jobs_by_id.items()
+        }
+        requirements_by_job = {
+            job_id: job.get("requirements", []) for job_id, job in jobs_by_id.items()
+        }
+
+    staged = score_staging.load_validated(
+        ctx.project,
+        checkpoint_key=checkpoint_key,
+        dependency_fingerprints=dependency_fingerprints,
+    )
+    if not staged:
+        return 0
+    current: dict[str, dict] = {}
+    for rating in _load_score_ratings(ctx.project):
+        job_id = str(rating.get("job_id", "")).strip()
+        if job_id in jobs_by_id and _rating_is_current(
+            rating,
+            dependency_fingerprints[job_id],
+            criteria_names,
+            requirements_by_job[job_id],
+        ):
+            current[job_id] = rating
+    current.update(staged)
+    unresolved_ids = set(jobs_by_id) - set(current)
+    ratings = [current[key] for key in sorted(current)]
+    _merge_score_ratings(ctx.project, ratings)
+    _write_score_freshness(
+        ctx.project,
+        current_ids=set(current),
+        unresolved_ids=unresolved_ids,
+        dependency_fingerprints=dependency_fingerprints,
+    )
+    _write_basic_score_group_artifacts(ctx.project, ratings)
+    score_staging.finish(
+        ctx.project, checkpoint_key=checkpoint_key, unresolved=len(unresolved_ids)
+    )
+    ctx.emit(
+        "artifact",
+        f"cancel salvage: promoted {len(staged)} checkpointed rating(s); "
+        f"current={len(current)} unresolved={len(unresolved_ids)}",
+    )
+    _finalize_score(ctx, complete_on_cancel=True)
+    return len(staged)
+
+
+def _finalize_score(ctx: RunContext, *, complete_on_cancel: bool = False) -> None:
     """Run deterministic score math + store update outside the agent sandbox."""
-    rc = _stream_script(ctx, "finalize_score", str(ctx.project))
+    cancel_was_set = bool(
+        complete_on_cancel and ctx.cancel_event is not None
+        and ctx.cancel_event.is_set()
+    )
+    if cancel_was_set:
+        # The user explicitly wants already-checkpointed rows committed. Model
+        # calls are stopped first; only this short local deterministic publish
+        # is allowed to complete before the run becomes cancelled.
+        ctx.cancel_event.clear()
+    try:
+        rc = _stream_script(ctx, "finalize_score", str(ctx.project))
+    finally:
+        if cancel_was_set:
+            ctx.cancel_event.set()
     summary_path = ctx.project / "strategy" / "score-finalize-summary.json"
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -2294,6 +3794,175 @@ def _result_text(envelope: dict) -> str:
     return ""
 
 
+def _extract_universe_proposal(text: str) -> dict | None:
+    raw = str(text or "").strip()
+    marker = "UNIVERSE_PROPOSAL_JSON:"
+    if marker not in raw:
+        return None
+    try:
+        payload = _extract_json_object(raw.split(marker, 1)[1].strip())
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if payload.get("schema") != "rolescout-universe-proposal-v1":
+        return None
+    return payload
+
+
+def _run_progressive_universe(
+    ctx: RunContext,
+    provider,
+    base_context: dict,
+    on_stream,
+) -> dict:
+    """Run proposal-only expansion workers and commit through one coordinator."""
+    meta = project_meta.load(ctx.project)
+    revision = int(meta.get("preference_revision", 0) or 0)
+    inputs = [str(value).strip() for value in meta.get("target_companies", []) if str(value).strip()]
+    tasks = [{
+        "input": value,
+        "kind": (
+            "descriptor_expansion" if universe_state.is_descriptor(value)
+            else "seed_peer_expansion"
+        ),
+    } for value in inputs]
+    universe_state.materialize_seed_universe(ctx.project)
+    if not tasks:
+        merged = universe_state.merge_proposals(
+            ctx.project, [], expected_revision=revision
+        )
+        ctx.summary = "Employer universe ready with no declared company inputs."
+        return {"events": [], "usage": {}, "universe": merged}
+
+    aggregate: dict = {"events": [], "usage": {}}
+    proposals: list[dict] = []
+    max_workers = min(4, max(1, len(tasks)))
+    ctx.emit(
+        "info",
+        f"background universe expansion: inputs={len(tasks)} workers={max_workers} revision={revision}",
+    )
+
+    def one(index: int, task_spec: dict) -> tuple[dict | None, dict]:
+        context = dict(base_context)
+        context["universe_task"] = {
+            **task_spec,
+            "preference_revision": revision,
+            "target_locations": meta.get("target_locations", []),
+            "focus_role": meta.get("focus_role", ""),
+            "target_level": meta.get("target_level", ""),
+            "negatives": meta.get("negatives", []),
+            "relationship_types": [
+                "direct_competitor", "same_talent_pool", "adjacent_product",
+                "ecosystem_partner", "funded_entrant", "location_peer",
+            ],
+        }
+        envelope = _provider_run(
+            provider,
+            "universe-expand",
+            context,
+            _labelled_stream(ctx, f"universe-{index:02d}", on_stream),
+            model_workflow="opportunity-plan",
+        )
+        return _extract_universe_proposal(_result_text(envelope)), envelope
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(one, index, task_spec): task_spec
+            for index, task_spec in enumerate(tasks, start=1)
+        }
+        for future in as_completed(futures):
+            task_spec = futures[future]
+            try:
+                proposal, envelope = future.result()
+            except Exception as exc:
+                ctx.mark_partial(
+                    f"universe:{task_spec['input']}", str(exc)[:300]
+                )
+                continue
+            _merge_usage(aggregate, envelope)
+            if not proposal:
+                ctx.mark_partial(
+                    f"universe:{task_spec['input']}", "worker returned no valid typed proposal"
+                )
+                continue
+            if (
+                str(proposal.get("input", "")).strip() != task_spec["input"]
+                or str(proposal.get("kind", "")) != task_spec["kind"]
+                or int(proposal.get("preference_revision", -1)) != revision
+            ):
+                ctx.mark_partial(
+                    f"universe:{task_spec['input']}", "proposal input/kind/revision mismatch"
+                )
+                continue
+            proposals.append(proposal)
+    try:
+        merged = universe_state.merge_proposals(
+            ctx.project, proposals, expected_revision=revision
+        )
+    except ValueError as exc:
+        ctx.mark_partial("universe_coordinator", str(exc))
+        return aggregate
+    rel = "targets/company-universe.json"
+    if rel not in ctx.artifacts_written:
+        ctx.artifacts_written.append(rel)
+    companies = sum(
+        len(bucket.get("companies", []))
+        for bucket in merged.get("buckets", []) if isinstance(bucket, dict)
+    )
+    ctx.validator_results.append({
+        "validator": "progressive_universe_coordinator",
+        "target": ctx.project.name,
+        "returncode": 0 if merged.get("state") == "ready" else 2,
+        "output": f"state={merged.get('state')} proposals={len(proposals)}/{len(tasks)} companies={companies}",
+    })
+    ctx.summary = (
+        f"Employer universe {merged.get('state')}: {companies} companies; "
+        f"{len(proposals)}/{len(tasks)} expansion proposals accepted."
+    )
+    aggregate["universe"] = merged
+    return aggregate
+
+
+def _validate_opportunity_universe(project: Path, payload: dict) -> list[str]:
+    resolver = core.load("resolve_company_sources")
+    meta = project_meta.load(project)
+    names: set[str] = set()
+    errors: list[str] = []
+    for bucket in payload.get("buckets", []) if isinstance(payload, dict) else []:
+        if not isinstance(bucket, dict):
+            continue
+        for company in bucket.get("companies", []):
+            if not isinstance(company, dict):
+                continue
+            name = str(company.get("name", "")).strip()
+            if not name:
+                errors.append("company universe contains an unnamed employer")
+                continue
+            if resolver.is_category_seed(name):
+                errors.append(f"category descriptor was emitted as an employer: {name}")
+            if not str(company.get("rationale", "")).strip():
+                errors.append(f"company universe employer lacks rationale: {name}")
+            names.add("".join(ch for ch in name.lower() if ch.isalnum()))
+    descriptor_inputs = {
+        str(item.get("input", "")).strip().lower()
+        for item in payload.get("expanded_descriptors", [])
+        if isinstance(item, dict)
+    }
+    for target in meta.get("target_companies", []):
+        target = str(target).strip()
+        if not target:
+            continue
+        if resolver.is_category_seed(target):
+            if target.lower() not in descriptor_inputs:
+                errors.append(f"category descriptor was not expanded: {target}")
+            continue
+        key = "".join(ch for ch in target.lower() if ch.isalnum())
+        if key not in names:
+            errors.append(f"declared employer seed is missing: {target}")
+    if not names:
+        errors.append("company universe contains no named employers")
+    return errors
+
+
 def _extract_runner_artifact_payload(text: str) -> dict | None:
     raw = str(text or "").strip()
     if not raw:
@@ -2309,11 +3978,676 @@ def _extract_runner_artifact_payload(text: str) -> dict | None:
         return None
     if payload.get("schema") != "rolescout-artifact-output-v1":
         return None
+    if set(payload) - {"schema", "artifacts", "store_writes", "notes"}:
+        return None
     return payload
 
 
+def _merge_repair_artifact_envelope(previous: dict, repair: dict) -> dict:
+    """Apply a model repair payload as a path-keyed patch over its prior set."""
+    before = _extract_runner_artifact_payload(_result_text(previous)) or {}
+    patch = _extract_runner_artifact_payload(_result_text(repair)) or {}
+    before_items = before.get("artifacts", [])
+    patch_items = patch.get("artifacts", [])
+    if not isinstance(before_items, list) or not isinstance(patch_items, list) or not patch_items:
+        return repair
+    by_path: dict[str, dict] = {}
+    order: list[str] = []
+    for item in [*before_items, *patch_items]:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", "")).replace("\\", "/").strip()
+        if not path:
+            continue
+        if path not in by_path:
+            order.append(path)
+        by_path[path] = item
+    merged_payload = {
+        "schema": "rolescout-artifact-output-v1",
+        "artifacts": [by_path[path] for path in order],
+        "store_writes": patch.get("store_writes", before.get("store_writes", [])),
+        "notes": patch.get("notes", []),
+    }
+    merged = dict(repair)
+    events = [dict(event) if isinstance(event, dict) else event
+              for event in repair.get("events", [])]
+    for event in reversed(events):
+        if isinstance(event, dict) and event.get("type") == "result":
+            event["content"] = (
+                "ROLESCOUT_ARTIFACT_OUTPUT_JSON:" +
+                json.dumps(merged_payload, ensure_ascii=False, separators=(",", ":"))
+            )
+            break
+    merged["events"] = events
+    return merged
+
+
+def _artifact_payload_value(item: dict) -> Any:
+    if "json" in item:
+        return item.get("json")
+    text = str(item.get("text", ""))
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _canonical_story_bank(value: Any) -> tuple[dict | None, list[str]]:
+    data = {"meta": "legacy list normalized by runner", "entries": value} if isinstance(value, list) else value
+    if not isinstance(data, dict):
+        return None, ["story-bank.json must be an object with an entries array"]
+    entries = data.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return None, ["story-bank.json entries must be a non-empty list"]
+    required = ("title", "source", "situation", "task", "action", "result", "best_for", "ev_refs")
+    errors: list[str] = []
+    normalized: list[dict] = []
+    used: set[str] = set()
+    next_id = 1
+    for index, raw in enumerate(entries):
+        if not isinstance(raw, dict):
+            errors.append(f"entry {index} must be an object")
+            continue
+        entry = dict(raw)
+        missing = [key for key in required if key not in entry or entry.get(key) in (None, "", [])]
+        if missing:
+            errors.append(f"entry {index} missing/empty {', '.join(missing)}")
+            continue
+        original_id = str(entry.get("id", "")).strip().upper()
+        if re.fullmatch(r"ST-\d{2,}", original_id) and original_id not in used:
+            story_id = original_id
+        else:
+            while f"ST-{next_id:02d}" in used:
+                next_id += 1
+            story_id = f"ST-{next_id:02d}"
+            next_id += 1
+        used.add(story_id)
+        entry["id"] = story_id
+        if isinstance(entry.get("ev_refs"), str):
+            entry["ev_refs"] = [
+                part.strip() for part in re.split(r"[,;]", entry["ev_refs"]) if part.strip()
+            ]
+        normalized.append(entry)
+    if errors:
+        return None, errors
+    return {
+        "schema": "rolescout-story-bank-v1",
+        "meta": data.get("meta", ""),
+        "entries": normalized,
+    }, []
+
+
+def _story_bank_markdown(data: dict) -> str:
+    def cell(value: Any) -> str:
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value)
+        return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
+
+    lines = [
+        "# Story Bank", "",
+        "| ID | Title | Source | S | T | A | R | Best for | EV refs |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for entry in data.get("entries", []):
+        lines.append("| " + " | ".join(cell(entry.get(key)) for key in (
+            "id", "title", "source", "situation", "task", "action", "result",
+            "best_for", "ev_refs")) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def _prevalidate_strategy_payload(ctx: RunContext, items: list[dict]) -> bool:
+    by_path = {str(item.get("path", "")).replace("\\", "/"): item for item in items}
+    required = {"strategy/prep-strategy.md", "strategy/target-priorities.md",
+                "strategy/group-assignments.json"}
+    missing = sorted(required - set(by_path))
+    group_paths = sorted(path for path in by_path
+                         if path.startswith("targets/job-groups/") and path.endswith(".md"))
+    if not group_paths:
+        missing.append("targets/job-groups/*.md")
+    assignments = _artifact_payload_value(by_path.get("strategy/group-assignments.json", {}))
+    expected_ids = {
+        str(row.get("job_id", "")).strip()
+        for row in _strategy_focused_job_rows(ctx.project)
+        if str(row.get("job_id", "")).strip()
+    }
+    seen_ids: set[str] = set()
+    assigned_groups: set[str] = set()
+    errors = list(missing)
+    if not isinstance(assignments, dict) or assignments.get("schema") != "rolescout-focused-group-assignments-v1":
+        errors.append("group-assignments.json has the wrong schema")
+    else:
+        rows = assignments.get("assignments", [])
+        if not isinstance(rows, list):
+            errors.append("group-assignments.json assignments must be a list")
+        else:
+            for row in rows:
+                if not isinstance(row, dict):
+                    errors.append("group assignment must be an object")
+                    continue
+                job_id = str(row.get("job_id", "")).strip()
+                group = _slug(row.get("job_group", ""), "")
+                disposition = str(row.get("disposition", "")).strip().lower()
+                disposition_reason = str(row.get("disposition_reason", "")).strip()
+                if not job_id or not group or job_id in seen_ids:
+                    errors.append(f"invalid/duplicate group assignment for {job_id or '<missing>'}")
+                    continue
+                if disposition not in PREP_DISPOSITIONS:
+                    errors.append(
+                        f"group assignment {job_id} needs disposition pursue, conditional, or parked"
+                    )
+                if not disposition_reason:
+                    errors.append(f"group assignment {job_id} needs disposition_reason")
+                seen_ids.add(job_id)
+                assigned_groups.add(group)
+    if seen_ids != expected_ids:
+        errors.append("group assignments must cover every focused job exactly once")
+    file_groups = {_slug(Path(path).stem, "") for path in group_paths}
+    if assigned_groups and assigned_groups != file_groups:
+        errors.append("active group files must exactly match assigned group slugs")
+    if len(expected_ids) >= 6:
+        max_groups = _max_strategy_groups(len(expected_ids))
+        if len(assigned_groups) > max_groups:
+            errors.append(
+                f"pathologically fragmented grouping: {len(assigned_groups)} groups for "
+                f"{len(expected_ids)} focused jobs (maximum {max_groups}); consolidate roles "
+                "that can share one positioning and resume"
+            )
+    strategy_text = str(by_path.get("strategy/prep-strategy.md", {}).get("text", ""))
+    for heading in ("Executive summary", "Strengths / weaknesses", "Application priority",
+                    "Portfolio strategy", "Resume emphasis", "LinkedIn direction",
+                    "Same-company multi-position"):
+        if heading.lower() not in strategy_text.lower():
+            errors.append(f"strategy missing substantive section: {heading}")
+    companies = [str(row.get("company", "")).strip().lower()
+                 for row in _strategy_focused_job_rows(ctx.project)]
+    if len(companies) != len(set(companies)) and not re.search(r"https?://", strategy_text):
+        errors.append("same-company strategy requires cited public web research")
+    for path in group_paths:
+        group_text = str(by_path[path].get("text", ""))
+        required_terms = ("why", "fit", "gap", "position", "next", "confidence")
+        if len(group_text.strip()) < 300 or any(
+                term not in group_text.lower() for term in required_terms):
+            errors.append(f"group file lacks substantive decision scaffolding: {path}")
+    if errors:
+        ctx.mark_partial("prep-strategy_publish_gate", "; ".join(errors[:12]))
+        ctx.emit("validator", "prep-strategy publish gate: FAIL")
+        return False
+    ctx.emit("validator", "prep-strategy publish gate: PASS")
+    return True
+
+
+def _prevalidate_linkedin_payload(ctx: RunContext, items: list[dict],
+                                  label: str = "prep-linkedin") -> bool:
+    import tempfile
+
+    reviews = [item for item in items if str(item.get("path", "")).endswith("linkedin-review.md")]
+    if len(reviews) != 1:
+        _record_publish_error(
+            ctx, label, "linkedin_artifact_set",
+            "expected exactly one linkedin-review.md",
+        )
+        ctx.emit("validator", "prep-linkedin publish gate: FAIL")
+        return False
+    reviews[0]["text"] = _normalize_linkedin_review_text(
+        str(reviews[0].get("text", ""))
+    )
+    with tempfile.TemporaryDirectory(prefix="rolescout-linkedin-") as tmp:
+        path = Path(tmp) / "linkedin-review.md"
+        path.write_text(str(reviews[0].get("text", "")), encoding="utf-8")
+        result = core.run_script("validate_linkedin_review", str(path), env=_env_for(ctx.project))
+    out = (result.stdout + result.stderr).strip()
+    ctx.validator_results.append({
+        "validator": "validate_linkedin_review[publish-gate]",
+        "target": str(reviews[0].get("path", "")),
+        "returncode": result.returncode,
+        "output": out[:800],
+    })
+    ctx.emit("validator", "prep-linkedin publish gate: " +
+             ("PASS" if result.returncode == 0 else "FAIL"))
+    if result.returncode != 0:
+        _record_publish_error(
+            ctx, label, "linkedin_review_validation", out[:4000]
+        )
+        return False
+    return True
+
+
+def _record_publish_error(ctx: RunContext, label: str, code: str, detail: str) -> None:
+    safe_label = label or "artifact"
+    safe_code = _slug(code, "publish-gate")[:80]
+    if not hasattr(ctx, "publish_errors"):
+        ctx.publish_errors = {}
+    ctx.publish_errors[safe_label] = {
+        "code": safe_code,
+        "detail": str(detail or "publish gate rejected the generated output")[:4000],
+    }
+    # Global telemetry strips output, but the validator name and target retain a
+    # useful, non-sensitive failure code and group label.
+    ctx.validator_results.append({
+        "validator": f"publish_gate[{safe_code}]",
+        "target": safe_label,
+        "returncode": 2,
+        "output": str(detail or "")[:800],
+    })
+
+
+def _coerce_typed_json_artifact(item: dict, expected_type: type) -> Any:
+    value = _artifact_payload_value(item)
+    if not isinstance(value, expected_type):
+        return None
+    item.pop("text", None)
+    item["json"] = value
+    return value
+
+
+def _validate_resume_target_brief(brief: Any) -> list[str]:
+    errors: list[str] = []
+    contract = _resume_artifact_contract("group")["target_brief"]
+    if not isinstance(brief, dict):
+        return ["target-brief.json must be a JSON object"]
+    if brief.get("schema") != RESUME_TARGET_BRIEF_SCHEMA:
+        errors.append(f"target brief schema must be {RESUME_TARGET_BRIEF_SCHEMA}")
+    for key in contract["required"]:
+        if key not in brief:
+            errors.append(f"target brief missing {key}")
+    if not isinstance(brief.get("source_job_ids"), list) or not brief.get("source_job_ids"):
+        errors.append("target brief source_job_ids must be a non-empty list")
+    requirements = brief.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        errors.append("target brief requirements must be a non-empty list")
+    else:
+        for index, req in enumerate(requirements, start=1):
+            if not isinstance(req, dict):
+                errors.append(f"requirement {index} must be an object")
+                continue
+            for key in contract["requirement_required"]:
+                if key not in req:
+                    errors.append(f"requirement {index} missing {key}")
+            if str(req.get("priority", "")).lower() not in {"must", "preferred"}:
+                errors.append(f"requirement {index} priority must be must or preferred")
+            if not isinstance(req.get("keywords"), list):
+                errors.append(f"requirement {index} keywords must be a list")
+            if not isinstance(req.get("source_job_ids"), list):
+                errors.append(f"requirement {index} source_job_ids must be a list")
+    gaps = brief.get("gaps")
+    if not isinstance(gaps, list):
+        errors.append("target brief gaps must be a list")
+    else:
+        for index, gap in enumerate(gaps, start=1):
+            if not isinstance(gap, dict) or any(
+                    not str(gap.get(key, "")).strip()
+                    for key in contract["gap_required"]):
+                errors.append(f"gap {index} requires requirement_id and gap")
+    return errors
+
+
+def _validate_resume_reasons_shape(reasons: Any) -> list[str]:
+    if not isinstance(reasons, list):
+        return ["reasons.json must be a JSON array"]
+    errors: list[str] = []
+    required = set(_resume_artifact_contract("group")["reasons"]["item_required"])
+    for index, reason in enumerate(reasons, start=1):
+        if not isinstance(reason, dict):
+            errors.append(f"reason {index} must be an object")
+            continue
+        missing = sorted(required - set(reason))
+        if missing:
+            errors.append(f"reason {index} missing {', '.join(missing)}")
+        if str(reason.get("reason", "")) not in RESUME_REASON_VALUES:
+            errors.append(f"reason {index} has invalid reason")
+        if str(reason.get("rewrite_type", "")) not in RESUME_REWRITE_TYPES:
+            errors.append(f"reason {index} has invalid rewrite_type")
+        for key in ("requirement_ids", "source_job_ids"):
+            if not isinstance(reason.get(key), list):
+                errors.append(f"reason {index} {key} must be a list")
+    return errors
+
+
+def _resume_reason_mapping_diagnostics(draft_text: str, reasons: Any) -> dict:
+    """Return exact, deterministic bullet↔reason mismatches for repair prompts."""
+    if not isinstance(reasons, list):
+        return {"bullet_count": 0, "reason_count": 0, "unmatched_bullets": [],
+                "unmatched_reason_prefixes": []}
+    validator = core.load("validate_resume_tailoring")
+    bullets = validator.extract_bullets(draft_text)
+    matched_reason_ids: set[int] = set()
+    unmatched_bullets: list[dict] = []
+    for index, bullet in enumerate(bullets):
+        reason = validator.find_reason(bullet, reasons)
+        if reason is None:
+            unmatched_bullets.append({"index": index, "text": bullet[:250]})
+        else:
+            matched_reason_ids.add(id(reason))
+    unmatched_prefixes = [
+        str(reason.get("bullet_prefix", ""))[:160]
+        for reason in reasons if isinstance(reason, dict) and id(reason) not in matched_reason_ids
+    ]
+    return {
+        "bullet_count": len(bullets),
+        "reason_count": len(reasons),
+        "unmatched_bullets": unmatched_bullets,
+        "unmatched_reason_prefixes": unmatched_prefixes,
+    }
+
+
+def _validator_failure_first(output: str, limit: int = 3500) -> str:
+    """Keep blocking diagnostics ahead of noisy warnings in repair/UI packets."""
+    lines = [line.rstrip() for line in str(output or "").splitlines() if line.strip()]
+    blocking: list[str] = []
+    warnings: list[str] = []
+    in_failure = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("FAIL:"):
+            in_failure = True
+            blocking.append(stripped)
+        elif stripped.startswith("WARN") or stripped.startswith("WARNINGS:"):
+            warnings.append(stripped)
+        elif in_failure and stripped.startswith("-"):
+            blocking.append(stripped)
+        elif not blocking and not stripped.startswith("PASS:"):
+            blocking.append(stripped)
+    parts = blocking or ["validator failed without a blocking diagnostic"]
+    if warnings:
+        parts.append(f"Non-blocking warnings ({len(warnings)}): " + " | ".join(warnings[:4]))
+    return "\n".join(parts)[:limit]
+
+
+def _prevalidate_resume_payload(ctx: RunContext, items: list[dict],
+                                label: str = "prep-resume") -> bool:
+    import tempfile
+
+    by_path = {str(item.get("path", "")).replace("\\", "/"): item for item in items}
+    drafts = [path for path in by_path if path.endswith("/resume-draft.md")]
+    parked = [path for path in by_path if path.endswith("/resume-not-generated.md")]
+    if bool(drafts) == bool(parked) or len(drafts) > 1:
+        _record_publish_error(ctx, label, "resume_artifact_set",
+                              "return exactly one draft or one resume-not-generated artifact")
+        return False
+    if parked:
+        ctx.emit("validator", "prep-resume publish gate: PASS (parked group)")
+        return True
+    draft_rel = drafts[0]
+    group_dir = str(PurePosixPath(draft_rel).parent)
+    expected = {
+        f"{group_dir}/target-brief.json", f"{group_dir}/resume-score.md",
+        draft_rel, f"{group_dir}/reasons.json", f"{group_dir}/resume-validation.md",
+    }
+    missing = sorted(expected - set(by_path))
+    draft_text = str(by_path[draft_rel].get("text", ""))
+    forbidden = []
+    if re.search(r"\bEV-\d+\b", draft_text, re.I):
+        forbidden.append("EV IDs")
+    if re.search(r"^#{1,3}\s+(?:Evidence Gaps?|Validation|Target)\b", draft_text, re.I | re.M):
+        forbidden.append("audit-only section")
+    reasons_item = by_path.get(f"{group_dir}/reasons.json", {})
+    brief_item = by_path.get(f"{group_dir}/target-brief.json", {})
+    reasons = _coerce_typed_json_artifact(reasons_item, list)
+    brief = _coerce_typed_json_artifact(brief_item, dict)
+    missing.extend(_validate_resume_reasons_shape(reasons))
+    missing.extend(_validate_resume_target_brief(brief))
+    if missing or forbidden:
+        detail = "; ".join(missing + forbidden)
+        _record_publish_error(ctx, label, "resume_schema", detail)
+        ctx.emit("validator", "prep-resume publish gate: FAIL")
+        return False
+    baseline = ctx.project / "resumes" / "baseline-extracted.md"
+    with tempfile.TemporaryDirectory(prefix="rolescout-resume-") as tmp:
+        root = Path(tmp)
+        staged: dict[str, Path] = {}
+        for rel, item in by_path.items():
+            target = root / PurePosixPath(rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if "json" in item:
+                target.write_text(json.dumps(item["json"], indent=2, ensure_ascii=False) + "\n",
+                                  encoding="utf-8")
+            else:
+                target.write_text(str(item.get("text", "")), encoding="utf-8")
+            staged[rel] = target
+        bullets = core.run_script(
+            "validate_resume_bullets", str(staged[draft_rel]), "--reasons",
+            str(staged[f"{group_dir}/reasons.json"]), env=_env_for(ctx.project))
+        tailoring = core.run_script(
+            "validate_resume_tailoring", str(staged[draft_rel]), "--baseline", str(baseline),
+            "--target-brief", str(staged[f"{group_dir}/target-brief.json"]), "--reasons",
+            str(staged[f"{group_dir}/reasons.json"]), env=_env_for(ctx.project))
+    failures = []
+    for name, result in (("validate_resume_bullets", bullets),
+                         ("validate_resume_tailoring", tailoring)):
+        out = (result.stdout + result.stderr).strip()
+        ctx.validator_results.append({
+            "validator": f"{name}[publish-gate]", "target": draft_rel,
+            "returncode": result.returncode, "output": out[:800],
+        })
+        if result.returncode != 0:
+            failures.append(f"{name}: {_validator_failure_first(out)}")
+    mapping = _resume_reason_mapping_diagnostics(draft_text, reasons)
+    if mapping["unmatched_bullets"] or mapping["unmatched_reason_prefixes"]:
+        failures.append(
+            "reason mapping: " + json.dumps(mapping, ensure_ascii=False)[:2000]
+        )
+    if failures:
+        _record_publish_error(ctx, label, "resume_content_validation", "; ".join(failures))
+        ctx.emit("validator", "prep-resume publish gate: FAIL")
+        return False
+    ctx.emit("validator", "prep-resume publish gate: PASS")
+    return True
+
+
+def _prevalidate_artifact_payload(ctx: RunContext, stage_workflow: str,
+                                  artifacts: list[dict], label: str = "") -> bool:
+    if stage_workflow == "prep-strategy":
+        return _prevalidate_strategy_payload(ctx, artifacts)
+    if stage_workflow == "prep-resume":
+        return _prevalidate_resume_payload(ctx, artifacts, label)
+    if stage_workflow == "prep-linkedin":
+        return _prevalidate_linkedin_payload(ctx, artifacts, label)
+    if stage_workflow == "apply":
+        markdown = [item for item in artifacts if isinstance(item, dict)
+                    and str(item.get("path", "")).replace("\\", "/")
+                    .endswith("/application-instructions.md")]
+        if len(markdown) != 1 or len(artifacts) != 1:
+            _record_publish_error(
+                ctx, label, "application_artifact_set",
+                "expected exactly one applications/<job>/application-instructions.md artifact",
+            )
+            return False
+        text = str(markdown[0].get("text", ""))
+        required = (
+            "Position summary", "Current posting state", "Application route",
+            "Required materials", "Field-by-field guidance", "Sensitive fields",
+            "Step-by-step user instructions", "What to save after submission",
+            "Tracker update recommendation",
+        )
+        missing = [heading for heading in required if not re.search(
+            rf"^#{{1,3}}\s+{re.escape(heading)}\s*$", text, re.I | re.M
+        )]
+        unsafe = []
+        if not re.search(r"\b(?:do not|never|not)\b.{0,80}\bsubmit", text, re.I | re.S):
+            unsafe.append("explicit no-submit boundary")
+        if not re.search(r"capture (?:completeness|boundary)|required upload", text, re.I):
+            unsafe.append("route-capture completeness/boundary")
+        if re.search(r"https?://[^\s]*\[(?:phone|contact) redacted\]", text, re.I):
+            unsafe.append("unbroken verified posting/application URLs")
+        if missing or unsafe:
+            _record_publish_error(
+                ctx, label, "application_packet_schema",
+                "; ".join([*(f"missing {item}" for item in missing),
+                           *(f"missing {item}" for item in unsafe)]),
+            )
+            ctx.emit("validator", "apply publish gate: FAIL")
+            return False
+        ctx.emit("validator", "apply publish gate: PASS")
+    if stage_workflow == "story-bank":
+        story_items = [item for item in artifacts
+                       if str(item.get("path", "")).replace("\\", "/") == "interviews/story-bank.json"]
+        if len(story_items) != 1:
+            ctx.mark_partial("story-bank_publish_gate", "expected exactly one story-bank.json")
+            return False
+        canonical, errors = _canonical_story_bank(_artifact_payload_value(story_items[0]))
+        if errors or canonical is None:
+            ctx.mark_partial("story-bank_publish_gate", "; ".join(errors[:10]))
+            ctx.emit("validator", "story-bank publish gate: FAIL")
+            return False
+        story_items[0].pop("text", None)
+        story_items[0]["json"] = canonical
+        mirror = [item for item in artifacts
+                  if str(item.get("path", "")).replace("\\", "/") == "interviews/story-bank.md"]
+        if len(mirror) != 1:
+            ctx.mark_partial("story-bank_publish_gate", "expected exactly one story-bank.md")
+            return False
+        mirror[0].pop("json", None)
+        mirror[0]["text"] = _story_bank_markdown(canonical)
+        ctx.emit("validator", "story-bank publish gate: PASS")
+    return True
+
+
+def _max_strategy_groups(job_count: int) -> int:
+    return job_count if job_count < 6 else max(3, (job_count * 3 + 4) // 5)
+
+
+def _hydrate_strategy_group_assignments(project: Path,
+                                        assignments: list[dict]) -> list[dict]:
+    from ..repositories import job_rows
+
+    group_by_id = {
+        str(row.get("job_id", "")): _slug(row.get("job_group", ""), "")
+        for row in assignments if isinstance(row, dict)
+    }
+    # validate_job_rows intentionally accepts only complete, persistable rows.
+    # Hydrate the semantic group patch from SQLite before passing it through the
+    # normal all-or-nothing upsert pipeline; partial rows would fail required-field
+    # validation even though store_io.upsert itself supports patch semantics.
+    current = {
+        str(row.get("job_id", "")): dict(row)
+        for row in job_rows(project, job_ids=list(group_by_id))
+    }
+    hydrated: list[dict] = []
+    for job_id, group in group_by_id.items():
+        row = current.get(job_id)
+        if row is None or not group:
+            return []
+        row["job_group"] = group
+        hydrated.append(row)
+    return hydrated if len(hydrated) == len(group_by_id) else []
+
+
+def _apply_strategy_group_assignments(ctx: RunContext) -> bool:
+    path = ctx.project / "strategy" / "group-assignments.json"
+    data = _read_json(path, {})
+    assignments = data.get("assignments", []) if isinstance(data, dict) else []
+    hydrated = _hydrate_strategy_group_assignments(ctx.project, assignments)
+    if not hydrated:
+        ctx.emit("validator", "strategy assignment hydration failed")
+        return False
+    return _store_write(
+        ctx, {"type": "store_write", "store": "job_list", "rows": hydrated})
+
+
+def _artifact_snapshot(project: Path, artifacts: list[dict]) -> dict[Path, bytes | None]:
+    snapshot: dict[Path, bytes | None] = {}
+    for item in artifacts:
+        try:
+            rel_path, _ = _safe_artifact_rel(str(item.get("path", "")))
+        except RoleScoutError:
+            continue
+        path = project / rel_path
+        snapshot[path] = path.read_bytes() if path.is_file() else None
+    manifest = project / "artifacts" / "manifest.json"
+    snapshot[manifest] = manifest.read_bytes() if manifest.is_file() else None
+    return snapshot
+
+
+def _restore_artifact_snapshot(snapshot: dict[Path, bytes | None]) -> None:
+    for path, content in snapshot.items():
+        if content is None:
+            path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".rollback")
+        temp.write_bytes(content)
+        os.replace(temp, path)
+
+
+def _run_staging_dir(ctx: RunContext, label: str) -> Path:
+    run_id = _slug(getattr(ctx, "run_id", ""), "unrecorded-run")
+    # status.json retains the complete logical label. Do not duplicate that
+    # label in the physical path: the run root plus nested logical artifact path
+    # otherwise exceeds the Windows legacy MAX_PATH budget for long role names.
+    # A fixed-size content-derived key remains stable and collision-safe while
+    # giving every workflow the same predictable staging path budget.
+    logical_label = str(label or "artifact")
+    safe_label = "s-" + hashlib.sha256(logical_label.encode("utf-8")).hexdigest()[:16]
+    return (ctx.project / "runtime" / "runs" / run_id / "staging" /
+            safe_label)
+
+
+def _write_staging_status(ctx: RunContext, label: str, *, workflow: str,
+                          state: str, artifacts: list[str] | None = None,
+                          error: dict | None = None) -> None:
+    root = _run_staging_dir(ctx, label)
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "rolescout-generated-artifact-staging-v1",
+        "run_id": getattr(ctx, "run_id", ""),
+        "label": label,
+        "workflow": workflow,
+        "state": state,
+        "artifacts": list(artifacts or []),
+        "updated_at": _now(),
+    }
+    if error:
+        payload["error_code"] = str(error.get("code", "publish-gate"))[:80]
+        payload["error_detail"] = str(error.get("detail", ""))[:4000]
+    path = root / "status.json"
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _mark_staging_repairing(ctx: RunContext, label: str, workflow: str) -> None:
+    status_path = _run_staging_dir(ctx, label) / "status.json"
+    current = _read_json(status_path, {})
+    artifacts = current.get("artifacts", []) if isinstance(current, dict) else []
+    _write_staging_status(
+        ctx, label, workflow=workflow, state="repairing",
+        artifacts=[str(item) for item in artifacts if str(item)],
+    )
+
+
+def _stage_generated_artifacts(ctx: RunContext, label: str, workflow: str,
+                               artifacts: list[dict]) -> list[str]:
+    """Preserve generated output before validation without touching canonical files."""
+    stage_dir = _run_staging_dir(ctx, label)
+    root = stage_dir / "artifacts"
+    staged: list[str] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        try:
+            rel_path, rel = _safe_artifact_rel(str(item.get("path", "")))
+        except RoleScoutError:
+            continue
+        target = root / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        value = _artifact_payload_value(item)
+        if isinstance(value, (dict, list)):
+            content = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+        else:
+            content = str(value or "")
+        target.write_text(content, encoding="utf-8")
+        staged.append(f"runtime/runs/{_slug(getattr(ctx, 'run_id', ''), 'unrecorded-run')}/staging/"
+                      f"{stage_dir.name}/artifacts/{rel}")
+    _write_staging_status(ctx, label, workflow=workflow, state="generated",
+                          artifacts=staged)
+    return staged
+
+
 def _materialize_runner_artifact_output(ctx: RunContext, envelope: dict,
-                                        allowed_paths: set[str] | None = None) -> bool:
+                                        allowed_paths: set[str] | None = None,
+                                        stage_workflow: str | None = None,
+                                        label: str = "") -> bool:
     payload = _extract_runner_artifact_payload(_result_text(envelope))
     if not payload:
         return False
@@ -2325,8 +4659,47 @@ def _materialize_runner_artifact_output(ctx: RunContext, envelope: dict,
         artifacts = []
     if not isinstance(store_writes, list):
         store_writes = []
+    if len(artifacts) > 50 or len(store_writes) > 5:
+        ctx.mark_partial("runner_artifact_output_oversized",
+                         "typed output exceeds artifact/store-write count limits")
+        return False
+    effective_workflow = stage_workflow or ctx.workflow
+    stage_label = label or effective_workflow
+    stage_enabled = effective_workflow in STAGED_PUBLISH_WORKFLOWS
+    staged_paths = (_stage_generated_artifacts(
+        ctx, stage_label, effective_workflow,
+        [item for item in artifacts if isinstance(item, dict)],
+    ) if stage_enabled else [])
+    if not _prevalidate_artifact_payload(ctx, effective_workflow, artifacts, stage_label):
+        error = getattr(ctx, "publish_errors", {}).get(stage_label, {
+            "code": "publish-gate", "detail": "artifact publish gate rejected output",
+        })
+        if stage_enabled:
+            _write_staging_status(ctx, stage_label, workflow=effective_workflow,
+                                  state="validation_failed", artifacts=staged_paths,
+                                  error=error)
+        return False
+    if stage_enabled:
+        _write_staging_status(ctx, stage_label, workflow=effective_workflow,
+                              state="validated", artifacts=staged_paths)
+    publish_snapshot = (_artifact_snapshot(ctx.project, artifacts)
+                        if effective_workflow in {"prep-strategy", "prep-resume",
+                                                  "prep-linkedin", "story-bank", "apply"}
+                        else {})
+    written_before = len(ctx.artifacts_written)
+    usage = envelope.get("usage", {}) if isinstance(envelope, dict) else {}
+    model_config = envelope.get("model_config", {}) if isinstance(envelope, dict) else {}
+    provenance = {
+        "prompt_fingerprint": usage.get("prompt_fingerprint", ""),
+        "model": model_config.get("model", ""),
+    }
+    seen_paths: set[str] = set()
     for item in artifacts:
         if not isinstance(item, dict):
+            continue
+        if set(item) - {"path", "text", "json"}:
+            ctx.mark_partial("runner_artifact_unknown_fields",
+                             "artifact contains unknown fields")
             continue
         path = str(item.get("path", "")).strip()
         if not path:
@@ -2346,19 +4719,65 @@ def _materialize_runner_artifact_output(ctx: RunContext, envelope: dict,
             })
             ctx.emit("validator", f"discarded out-of-scope artifact: {rel}")
             continue
+        if rel in seen_paths:
+            ctx.mark_partial("runner_artifact_duplicate", f"duplicate artifact path: {rel}")
+            continue
+        seen_paths.add(rel)
+        if "text" in item and len(str(item.get("text", "")).encode("utf-8")) > 1_000_000:
+            ctx.mark_partial("runner_artifact_oversized", f"artifact too large: {rel}")
+            continue
         ev = {"type": "artifact", "path": path}
-        if "json" in item:
-            ev["json"] = item["json"]
+        opportunity_universe = (
+            ctx.workflow == "opportunity-plan"
+            and rel == "targets/company-universe.json"
+        )
+        artifact_json = item.get("json")
+        if opportunity_universe and artifact_json is None and "text" in item:
+            try:
+                artifact_json = json.loads(str(item.get("text", "")))
+            except json.JSONDecodeError:
+                ctx.mark_partial(
+                    "opportunity_plan_validation",
+                    "company universe artifact must contain a JSON object",
+                )
+                continue
+        if artifact_json is not None:
+            if opportunity_universe and isinstance(artifact_json, dict):
+                universe_errors = _validate_opportunity_universe(ctx.project, artifact_json)
+                if universe_errors:
+                    ctx.mark_partial("opportunity_plan_validation", "; ".join(universe_errors[:8]))
+                    ctx.emit("validator", "company universe rejected: " + "; ".join(universe_errors[:4]))
+                    continue
+                current_meta = project_meta.load(ctx.project)
+                artifact_json = dict(artifact_json)
+                artifact_json["preference_revision"] = int(
+                    current_meta.get("preference_revision", 0) or 0)
+                artifact_json["preference_fingerprint"] = (
+                    project_meta.preference_fingerprint(current_meta))
+            elif opportunity_universe:
+                ctx.mark_partial(
+                    "opportunity_plan_validation",
+                    "company universe artifact must be a JSON object",
+                )
+                continue
+            ev["json"] = artifact_json
         else:
             ev["text"] = str(item.get("text", ""))
-        _write_artifact(ctx, ev)
+        _write_artifact(ctx, ev, provenance=provenance)
         artifact_count += 1
     for item in store_writes:
         if not isinstance(item, dict):
             continue
         store = str(item.get("store", "")).strip()
         rows = item.get("rows", [])
-        if store not in {"job_list", "tracker"} or not isinstance(rows, list):
+        # Apply tracker rows are runner-owned so a model cannot invent or regress
+        # private application state.  The dedicated apply workflow writes them
+        # only after the corresponding packet has passed its publish gate.
+        allowed_stores = {"job_list"} if effective_workflow == "search" else set()
+        if store not in allowed_stores or not isinstance(rows, list) or len(rows) > 500:
+            if store:
+                ctx.mark_partial("runner_store_scope",
+                                 f"store write not allowed for {ctx.workflow}: {store}")
             continue
         _store_write(ctx, {"type": "store_write", "store": store, "rows": rows})
         store_count += 1
@@ -2373,6 +4792,29 @@ def _materialize_runner_artifact_output(ctx: RunContext, envelope: dict,
         f"runner artifact output materialized: {artifact_count} artifact(s), "
         f"{store_count} store write(s)",
     )
+    if effective_workflow == "prep-strategy" and not _apply_strategy_group_assignments(ctx):
+        _restore_artifact_snapshot(publish_snapshot)
+        del ctx.artifacts_written[written_before:]
+        ctx.mark_partial("prep-strategy_store_gate",
+                         "focused job-group assignments were not persisted; artifact publish rolled back")
+        ctx.emit("validator", "prep-strategy atomic publish: ROLLED BACK")
+        if stage_enabled:
+            _write_staging_status(
+                ctx, stage_label, workflow=effective_workflow, state="publish_failed",
+                artifacts=staged_paths,
+                error={"code": "strategy-store-gate",
+                       "detail": "focused job-group assignments were not persisted"},
+            )
+        return False
+    if stage_enabled:
+        if not hasattr(ctx, "publish_results"):
+            ctx.publish_results = {}
+        ctx.publish_results[stage_label] = {
+            "state": "published", "workflow": effective_workflow,
+            "artifacts": staged_paths,
+        }
+        _write_staging_status(ctx, stage_label, workflow=effective_workflow,
+                              state="published", artifacts=staged_paths)
     return True
 
 
@@ -2460,9 +4902,19 @@ def _execute_subagent(ctx: RunContext, provider, workflow: str, context: dict,
                              _labelled_stream(ctx, label, on_stream),
                              model_workflow=model_workflow)
     ctx.streamed = bool(envelope.get("streamed"))
-    execute_events(ctx, envelope.get("events", []), allowed_artifacts=allowed_artifacts)
+    events = envelope.get("events", [])
+    if workflow in STAGED_PUBLISH_WORKFLOWS:
+        # Canonical prep files are written only after the typed final payload
+        # passes its gate. Streaming artifact events must not bypass atomicity.
+        events = [event for event in events if not isinstance(event, dict)
+                  or event.get("type") not in {"artifact", "store_write"}]
+    execute_events(ctx, events, allowed_artifacts=allowed_artifacts)
     _append_agent_result_log(ctx, label, envelope)
-    _materialize_runner_artifact_output(ctx, envelope, allowed_paths=allowed_artifacts)
+    materialized = _materialize_runner_artifact_output(
+        ctx, envelope, allowed_paths=allowed_artifacts, stage_workflow=workflow,
+        label=label)
+    if workflow in {"prep-strategy", "prep-resume", "prep-linkedin", "story-bank"} and not materialized:
+        ctx.failure_class = ctx.failure_class or f"{workflow.replace('-', '_')}_publish_gate_failure"
     for ev in envelope.get("events", []):
         if isinstance(ev, dict) and ev.get("type") == "result" and workflow != "score":
             ev.pop("content", None)
@@ -2475,11 +4927,12 @@ def _run_score_workflow(ctx: RunContext, provider, context: dict, on_stream,
     del label
     envelope = _run_score_batches(ctx, provider, context, on_stream)
     if not envelope.get("ratings"):
-        ratings_path = ctx.project / "strategy" / "job-ratings.json"
-        if not ratings_path.exists():
-            ratings_path.parent.mkdir(parents=True, exist_ok=True)
-            ratings_path.write_text("[]\n", encoding="utf-8")
-        ctx.mark_partial("score_batch", "no evaluator ratings returned; finalizer will park visible rows")
+        ctx.mark_partial(
+            "score_batch",
+            "no current validated ratings are available; finalizer was skipped and job rows "
+            "remain unchanged",
+        )
+        return envelope
     if not ctx.failure_class and not ctx.blocked_reasons:
         _materialize_score_output(ctx, envelope)
         for ev in envelope.get("events", []):
@@ -2487,6 +4940,129 @@ def _run_score_workflow(ctx: RunContext, provider, context: dict, on_stream,
                 ev.pop("content", None)
         _finalize_score(ctx)
     return envelope
+
+
+def _application_tracker_row(project: Path, row: dict, artifact_path: str,
+                             route_audit: dict) -> dict:
+    from ..repositories import tracker_rows
+
+    application_id = f"app--{row.get('job_id', '')}"
+    existing = next((dict(item) for item in tracker_rows(project)
+                     if item.get("application_id") == application_id), {})
+    status = str(existing.get("status") or "to_apply")
+    today = date.today()
+    due_days = 2 if str(row.get("priority", "")) == "high" else 5
+    packet_note = (
+        f"Local application packet: {artifact_path}. Route capture: "
+        f"{route_audit.get('capture_completeness', 'unknown')}."
+    )
+    prior_notes = str(existing.get("notes", "")).strip()
+    prior_notes = re.sub(
+        r"(?:^|\s)Local application packet:\s*applications/\S+/application-instructions\.md\.\s*"
+        r"Route capture:\s*[^.]+\.",
+        " ", prior_notes, flags=re.I,
+    ).strip()
+    notes = f"{prior_notes} {packet_note}".strip()
+    next_action = str(existing.get("next_action", "")).strip()
+    if status == "to_apply" or not next_action:
+        next_action = f"Review {artifact_path}, confirm manual-only fields, then submit personally."
+    return {
+        "application_id": application_id,
+        "job_id": str(row.get("job_id", "")),
+        "company": str(row.get("company", "")),
+        "title": str(row.get("title", "")),
+        "job_group": str(row.get("job_group", "")),
+        "status": status,
+        "applied_at": str(existing.get("applied_at", "")),
+        "resume_version": str(existing.get("resume_version") or
+                              _recommended_application_resume(project, row)),
+        "linkedin_version": str(existing.get("linkedin_version") or
+                                _recommended_application_linkedin(project, row)),
+        "contact": str(existing.get("contact", "")),
+        "next_action": next_action,
+        "next_action_due": str(existing.get("next_action_due") or
+                               (today + timedelta(days=due_days)).isoformat()),
+        "last_updated": today.isoformat(),
+        "outcome": str(existing.get("outcome", "")),
+        "notes": notes,
+    }
+
+
+def _run_apply_workflow(ctx: RunContext, provider, context_for, stale_material: str,
+                        on_stream, pdir: Path | None, task: str | None,
+                        run_intent: dict) -> dict:
+    selected = _select_application_jobs(ctx.project, task, run_intent)
+    if not selected:
+        ctx.mark_blocked(
+            "apply_selection",
+            "No focused role matched this apply instruction. Focus a role first or name an exact focused job.",
+        )
+        ctx.emit("attention", "Apply blocked: focus a role first or name an exact focused job.")
+        return {"events": [], "usage": {}}
+    ctx.emit(
+        "info",
+        "apply scope: " + "; ".join(
+            f"{row.get('company')} — {row.get('title')}" for row in selected
+        ),
+    )
+
+    jobs: list[dict] = []
+    by_label: dict[str, tuple[dict, dict, str]] = {}
+    snapshots: dict[str, dict] = {}
+    for index, row in enumerate(selected, start=1):
+        ctx.check_cancelled()
+        posting_url = str(row.get("job_page_url") or row.get("source_url") or "").strip()
+        label = _agent_label("apply", index, str(row.get("company", "")))
+        expected = _application_artifact_path(row)
+        ctx.emit("progress", f"{label}: auditing public application route (read-only)")
+        audit = application_audit.audit_application_route(posting_url, allow_browser=True)
+        completeness = str(audit.get("capture_completeness", "failed"))
+        ctx.validator_results.append({
+            "validator": "application_route_audit",
+            "target": str(row.get("job_id", "")),
+            "returncode": 1 if completeness == "failed" else 0,
+            "output": (
+                f"vendor={audit.get('vendor', 'unknown')} capture={completeness}; "
+                f"{audit.get('capture_boundary', '')}"
+            )[:800],
+        })
+        if completeness == "failed":
+            detail = "; ".join(str(item) for item in audit.get("errors", [])) or \
+                "No verified application route/form could be captured."
+            ctx.mark_partial(label, detail)
+            ctx.emit("attention", f"{label}: application route audit failed: {detail[:400]}")
+            continue
+        packet = _runner_application_role_packet(ctx.project, pdir, row, audit, selected)
+        extra = {"application_role_packet": packet}
+        job_context = context_for("apply", stale_material, extra)
+        jobs.append({
+            "label": label,
+            "workflow": "apply",
+            "context": job_context,
+            "allowed_artifacts": {expected},
+            "repair_on_publish_fail": True,
+            "publish_repair_attempts": 1,
+        })
+        by_label[label] = (row, audit, expected)
+        snapshots[label] = _artifact_snapshot(ctx.project, [{"path": expected}])
+
+    if not jobs:
+        ctx.failure_class = ctx.failure_class or "application_route_audit_failed"
+        return {"events": [], "usage": {}}
+    merged = _run_parallel_named_subagents(ctx, provider, jobs, on_stream)
+    for label in merged.get("published_labels", []):
+        row, audit, expected = by_label[label]
+        tracker = _application_tracker_row(ctx.project, row, expected, audit)
+        if not _store_write(ctx, {"type": "store_write", "store": "tracker", "rows": [tracker]}):
+            _restore_artifact_snapshot(snapshots[label])
+            ctx.artifacts_written[:] = [path for path in ctx.artifacts_written if path != expected]
+            ctx.failure_class = ctx.failure_class or "application_tracker_atomic_publish_failed"
+            ctx.emit("validator", f"{label}: packet publish rolled back because tracker write failed")
+        else:
+            ctx.emit("result", f"Application instructions ready: {expected}")
+    if not merged.get("published_labels") and not ctx.failure_class:
+        ctx.failure_class = "application_packet_publish_failed"
+    return merged
 
 
 def _run_parallel_subagents(ctx: RunContext, provider, workflows_to_run: list[str],
@@ -2660,29 +5236,6 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
                                   hard_fail_when_all_fail: bool = True) -> dict:
     if not jobs:
         return {"events": [], "usage": {}}
-    if len(jobs) == 1:
-        job = jobs[0]
-        try:
-            return _execute_subagent(ctx, provider, job["workflow"], job["context"],
-                                     on_stream, label=job["label"],
-                                     model_workflow=job.get("model_workflow"),
-                                     allowed_artifacts=job.get("allowed_artifacts"))
-        except RunCancelled:
-            raise
-        except Exception as e:
-            ctx.mark_partial(job["label"], str(e))
-            _append_agent_log(ctx, job["label"], f"ERROR: {e}")
-            _write_agent_manifest(ctx, [{
-                "label": job["label"], "workflow": job["workflow"],
-                "model_workflow": job.get("model_workflow", ""),
-                "status": "failed", "error": str(e)[:1000],
-            }])
-            ctx.emit("info", f"subagent failed: {job['label']}: {str(e)[:300]}")
-            if hard_fail_when_all_fail and _looks_blocked_error(str(e)):
-                ctx.mark_blocked(job["label"], str(e))
-            elif hard_fail_when_all_fail:
-                ctx.failure_class = ctx.failure_class or "named_subagent_failed"
-            return {"events": [], "usage": {}, "failed_labels": [job["label"]]}
 
     ctx.emit("info", "subagents start: " + ", ".join(job["label"] for job in jobs))
     results: dict[str, dict] = {}
@@ -2693,6 +5246,8 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
     except ValueError:
         max_workers = 6
     workers = max(1, min(len(jobs), max_workers))
+    prep_phase = str(jobs[0].get("workflow", "")).removeprefix("prep-")
+    prep_completed = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
@@ -2709,7 +5264,28 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
             job = futures[fut]
             label = job["label"]
             try:
-                results[label] = fut.result()
+                envelope = fut.result()
+                results[label] = envelope
+                # Publish a passing independent group as soon as its provider call
+                # completes. Slow siblings and their repairs must not hide ready work.
+                ctx.streamed = bool(envelope.get("streamed"))
+                allowed = job.get("allowed_artifacts")
+                event_batch = envelope.get("events", [])
+                if job["workflow"] in STAGED_PUBLISH_WORKFLOWS:
+                    event_batch = [
+                        event for event in event_batch if not isinstance(event, dict)
+                        or event.get("type") not in {"artifact", "store_write"}
+                    ]
+                execute_events(ctx, event_batch, allowed_artifacts=allowed)
+                _append_agent_result_log(ctx, label, envelope)
+                job["_initial_materialized"] = _materialize_runner_artifact_output(
+                    ctx, envelope, allowed_paths=allowed,
+                    stage_workflow=job["workflow"], label=label,
+                )
+                if (not job["_initial_materialized"]
+                        and job.get("repair_on_publish_fail")):
+                    _mark_staging_repairing(ctx, label, job["workflow"])
+                job["_initial_processed"] = True
                 records.append({"label": label, "workflow": job["workflow"],
                                 "model_workflow": job.get("model_workflow", ""),
                                 "status": "ok"})
@@ -2723,8 +5299,15 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
                 _append_agent_log(ctx, label, f"ERROR: {e}")
                 ctx.mark_partial(label, str(e))
                 ctx.emit("info", f"subagent failed: {label}: {str(e)[:300]}")
+            prep_completed += 1
+            _update_prep_progress(
+                ctx, prep_phase, "running", completed=prep_completed, total=len(jobs),
+                detail=("published" if job.get("_initial_materialized")
+                        else "generated; validation/repair pending"),
+            )
     _write_agent_manifest(ctx, records)
-    merged: dict = {"events": [], "usage": {}, "failed_labels": sorted(failures)}
+    merged: dict = {"events": [], "usage": {}, "failed_labels": sorted(failures),
+                    "published_labels": [], "validation_failed_labels": []}
     if hard_fail_when_all_fail and failures and not results:
         reason = "; ".join(f"{label}: {msg}" for label, msg in failures.items())
         if all(_looks_blocked_error(msg) for msg in failures.values()):
@@ -2738,14 +5321,155 @@ def _run_parallel_named_subagents(ctx: RunContext, provider, jobs: list[dict],
         envelope = results[label]
         ctx.streamed = bool(envelope.get("streamed"))
         allowed = job.get("allowed_artifacts")
-        execute_events(ctx, envelope.get("events", []), allowed_artifacts=allowed)
-        _append_agent_result_log(ctx, label, envelope)
-        _materialize_runner_artifact_output(ctx, envelope, allowed_paths=allowed)
+        if job.get("_initial_processed"):
+            materialized = bool(job.get("_initial_materialized"))
+        else:
+            event_batch = envelope.get("events", [])
+            if job["workflow"] in STAGED_PUBLISH_WORKFLOWS:
+                event_batch = [event for event in event_batch if not isinstance(event, dict)
+                               or event.get("type") not in {"artifact", "store_write"}]
+            execute_events(ctx, event_batch, allowed_artifacts=allowed)
+            _append_agent_result_log(ctx, label, envelope)
+            materialized = _materialize_runner_artifact_output(
+                ctx, envelope, allowed_paths=allowed, stage_workflow=job["workflow"],
+                label=label)
+        attempt_label = label
+        attempt_envelope = envelope
+        try:
+            max_repairs = int(job.get("publish_repair_attempts", 1) or 1)
+        except (TypeError, ValueError):
+            max_repairs = 1
+        repair_feedback_history: list[str] = []
+        for repair_number in range(1, max(0, max_repairs) + 1):
+            if materialized or not job.get("repair_on_publish_fail"):
+                break
+            error = ctx.publish_errors.get(attempt_label, {
+                "code": "publish-gate", "detail": "generated output failed validation",
+            })
+            feedback = str(error.get("detail", "")).strip()
+            if feedback and feedback not in repair_feedback_history:
+                repair_feedback_history.append(feedback)
+            repair_label = f"{label}-repair-{repair_number}"
+            ctx.emit("validator", f"{label}: bounded publish-gate repair {repair_number}/{max_repairs}")
+            _mark_staging_repairing(ctx, attempt_label, job["workflow"])
+            repair_context = json.loads(json.dumps(job["context"]))
+            packet = repair_context.get("runner_context_packet")
+            if isinstance(packet, dict):
+                previous = _extract_runner_artifact_payload(_result_text(attempt_envelope)) or {}
+                previous_artifacts = previous.get("artifacts", [])
+                if job["workflow"] == "prep-linkedin":
+                    repair_instruction = (
+                        "Revise the supplied previous_generated_artifacts; do not restart from "
+                        "the baseline. Return exactly one complete linkedin-review.md for this "
+                        "group. Resolve every validator item. The score table must contain only "
+                        "Headline, About, Experience entries, Skills, and Education; include an "
+                        "Overall score line that explicitly says Experience x3; then include one "
+                        "`### <Section>` proposal for each scored section with mandatory fenced "
+                        "`Current` and fenced `Proposed` copyable blocks. `Proposed` must contain "
+                        "only final LinkedIn content; keep advisory prose in separate Add, Change, "
+                        "or Guidance blocks."
+                    )
+                elif job["workflow"] == "apply":
+                    repair_instruction = (
+                        "Revise the supplied previous_generated_artifacts and return exactly one "
+                        "complete application-instructions.md at artifact_contract.exact_path. "
+                        "Resolve every validator item; include every required heading, an explicit "
+                        "no-submit boundary, route capture completeness/boundary, every captured "
+                        "field with evidence-backed draft guidance, and an empty store_writes list."
+                    )
+                elif job["workflow"] == "prep-resume":
+                    repair_instruction = (
+                        "Revise the supplied previous_generated_artifacts; do not restart from "
+                        "the baseline. Return the complete group set. Resolve every validator "
+                        "item from every attempt simultaneously. Keep at most 16 experience "
+                        "bullets and 360 experience-bullet words, selected at no more than 25%, "
+                        "and requirement coverage at or above 80%. If coverage is missing while "
+                        "already at the bullet budget, replace or retarget a lower-priority "
+                        "bullet; never add a seventeenth. Keep one reasons entry for every "
+                        "experience bullet and none for Education/Skills. Follow "
+                        "artifact_contract exactly."
+                    )
+                else:
+                    repair_instruction = (
+                        "Revise the supplied previous_generated_artifacts; do not restart from "
+                        "the baseline. Return the complete artifact set and resolve every "
+                        "validator item while preserving earlier passing constraints."
+                    )
+                cumulative_feedback = "\n\n".join(
+                    f"Attempt {index}:\n{item}"
+                    for index, item in enumerate(repair_feedback_history, start=1)
+                )
+                packet["repair"] = {
+                    "attempt": repair_number,
+                    "error_code": error.get("code", "publish-gate"),
+                    "validator_feedback": cumulative_feedback[-12000:],
+                    "previous_generated_artifacts": (
+                        previous_artifacts if isinstance(previous_artifacts, list) else []
+                    ),
+                    "instruction": repair_instruction,
+                }
+            try:
+                repaired = _provider_run(
+                    provider, job["workflow"], repair_context,
+                    _labelled_stream(ctx, repair_label, on_stream),
+                    job.get("repair_model_workflow", job.get("model_workflow")),
+                )
+                records.append({
+                    "label": repair_label, "workflow": job["workflow"],
+                    "model_workflow": job.get(
+                        "repair_model_workflow", job.get("model_workflow", "")),
+                    "status": "ok",
+                })
+                repair_events = repaired.get("events", [])
+                if job["workflow"] in STAGED_PUBLISH_WORKFLOWS:
+                    repair_events = [event for event in repair_events
+                                     if not isinstance(event, dict)
+                                     or event.get("type") not in {"artifact", "store_write"}]
+                execute_events(ctx, repair_events, allowed_artifacts=allowed)
+                _append_agent_result_log(ctx, repair_label, repaired)
+                repaired = _merge_repair_artifact_envelope(attempt_envelope, repaired)
+                materialized = _materialize_runner_artifact_output(
+                    ctx, repaired, allowed_paths=allowed,
+                    stage_workflow=job["workflow"], label=repair_label)
+                _merge_usage(merged, repaired)
+                attempt_label = repair_label
+                attempt_envelope = repaired
+            except RunCancelled:
+                raise
+            except Exception as exc:
+                records.append({
+                    "label": repair_label, "workflow": job["workflow"],
+                    "model_workflow": job.get("model_workflow", ""),
+                    "status": "failed", "error": str(exc)[:1000],
+                })
+                ctx.mark_partial(repair_label, str(exc))
+                _append_agent_log(ctx, repair_label, f"ERROR: {exc}")
+                ctx.emit("info", f"subagent failed: {repair_label}: {str(exc)[:300]}")
+                status_path = _run_staging_dir(ctx, attempt_label) / "status.json"
+                current_status = _read_json(status_path, {})
+                _write_staging_status(
+                    ctx, attempt_label, workflow=job["workflow"],
+                    state="validation_failed",
+                    artifacts=(current_status.get("artifacts", [])
+                               if isinstance(current_status, dict) else []),
+                    error={"code": "repair-provider-failed", "detail": str(exc)},
+                )
+                break
+        if materialized:
+            merged["published_labels"].append(label)
+        elif job["workflow"] in {"prep-resume", "prep-linkedin"}:
+            merged["validation_failed_labels"].append(label)
+            final_error = (ctx.publish_errors.get(attempt_label) or
+                           ctx.publish_errors.get(label) or {})
+            code = str(final_error.get("code", "publish-gate"))
+            ctx.mark_partial(label, f"{code}: generated output retained in run staging")
+            ctx.emit("validator", f"{label}: NOT PUBLISHED [{code}]")
         for ev in envelope.get("events", []):
             if isinstance(ev, dict) and ev.get("type") == "result" and job["workflow"] != "score":
                 ev.pop("content", None)
         _merge_usage(merged, envelope)
         ctx.emit("info", f"subagent done: {label}")
+    _write_agent_manifest(ctx, records)
     return merged
 
 
@@ -2980,6 +5704,9 @@ def _record_run(ctx: RunContext, run_id: str, started: str, t0: float,
         "model_config": envelope.get("model_config", {}),
         "cost_usd": usage.get("cost_usd", 0), "tokens_in": usage.get("tokens_in", 0),
         "tokens_out": usage.get("tokens_out", 0), "latency_s": latency,
+        "input_bytes": usage.get("input_bytes", 0),
+        "prompt_fingerprint": usage.get("prompt_fingerprint", ""),
+        "data_classes": usage.get("data_classes", []),
         "validator_results": ctx.validator_results,
         "failure_class": ctx.failure_class, "status": status, "summary": summary,
         "events": envelope.get("events", []),
@@ -2991,7 +5718,8 @@ def _exit_code_for_status(status: str) -> int:
     return 0 if status in {"ok", "partial"} else 1
 
 
-def _build_interview_context(ctx: RunContext) -> None:
+def _build_interview_context(ctx: RunContext,
+                             scoped_job_ids: set[str] | None = None) -> None:
     result = core.run_script("build_interview_context", str(ctx.project),
                              env=_env_for(ctx.project))
     out = (result.stdout + result.stderr).strip()
@@ -3006,6 +5734,16 @@ def _build_interview_context(ctx: RunContext) -> None:
     if result.returncode != 0:
         ctx.mark_partial("build_interview_context", out[:800])
         ctx.emit("validator", out[:800])
+        return
+    if scoped_job_ids is not None:
+        path = ctx.project / "interviews" / "interview-context.json"
+        data = _read_json(path, {})
+        if isinstance(data, dict):
+            data["prep_scope_job_ids"] = sorted(scoped_job_ids)
+            _write_artifact(ctx, {
+                "type": "artifact", "path": "interviews/interview-context.json",
+                "json": data,
+            })
 
 
 def _load_interview_context_roles(project: Path) -> list[dict]:
@@ -3015,7 +5753,12 @@ def _load_interview_context_roles(project: Path) -> list[dict]:
 
 
 def _interview_role_slug(role: dict) -> str:
-    return _slug(f"{role.get('company', '')}-{role.get('title', '')}", "role")
+    # Company + title is not a position identity: an employer can publish two
+    # distinct requisitions with the same visible title. Keep the readable
+    # prefix, but reserve the final 8 characters for the stable job identity so
+    # per-position packs never overwrite one another.
+    from ..interview_paths import role_slug
+    return role_slug(role)
 
 
 def _interview_expected_artifact(role: dict) -> str:
@@ -3032,6 +5775,64 @@ def _interview_validator_paths(output: str) -> set[str]:
         rel = PurePosixPath("interviews") / match.group(1).replace("\\", "/") / "prep-notes.md"
         paths.add(rel.as_posix())
     return paths
+
+
+def _reuse_current_interview_packs(ctx: RunContext, roles: list[dict]) -> bool:
+    """Reuse a complete same-day pack set when no grounding input is newer.
+
+    Prep-interview performs expensive public research per role. A same-day retry
+    after a UI disconnect, validator repair, or server restart should validate
+    and reuse already-published packs instead of paying for all research again.
+    """
+    role_ids = [str(role.get("job_id", "")).strip() for role in roles]
+    if not role_ids:
+        return False
+    outputs = [ctx.project / _interview_expected_artifact(role) for role in roles]
+    if not all(path.is_file() for path in outputs):
+        return False
+    input_paths = [
+        ctx.project / "interviews" / "interview-context.json",
+        ctx.project / "interviews" / "story-bank.json",
+        ctx.project / "data" / "focused-jobs.json",
+    ]
+    from . import preflight as _pf
+    pdir = _pf.profile_dir(ctx.project)
+    if pdir:
+        input_paths.extend(
+            pdir / name for name in (
+                "candidate-profile.md", "evidence-map.md", "decision-policy.json",
+                "standing-instructions.md",
+            )
+        )
+    existing_inputs = [path for path in input_paths if path.is_file()]
+    newest_input = max((path.stat().st_mtime for path in existing_inputs), default=0)
+    oldest_output = min(path.stat().st_mtime for path in outputs)
+    local_today = datetime.now().astimezone().date()
+    if oldest_output < newest_input or datetime.fromtimestamp(oldest_output).date() != local_today:
+        return False
+    results = [
+        core.run_script("validate_interview_prep", str(path), env=_env_for(ctx.project))
+        for path in outputs
+    ]
+    out = "\n".join((result.stdout + result.stderr).strip() for result in results)
+    returncode = max((result.returncode for result in results), default=1)
+    ctx.validator_results.append({
+        "validator": "validate_interview_prep[same-day-cache]",
+        "target": ctx.project.name,
+        "returncode": returncode,
+        "output": out[:800],
+    })
+    ctx.emit("validator", "same-day interview pack validation: "
+             f"{'PASS' if returncode == 0 else 'MISS'}")
+    if returncode != 0:
+        return False
+    ctx.artifacts_written.extend(
+        path for path in (_interview_expected_artifact(role) for role in roles)
+        if path not in ctx.artifacts_written
+    )
+    ctx.summary = f"Reused {len(outputs)} current same-day interview pack(s)."
+    ctx.emit("result", ctx.summary)
+    return True
 
 
 def _extract_h2_section(markdown: str, section: str) -> str:
@@ -3075,11 +5876,20 @@ def _assemble_interview_prep(ctx: RunContext, role: dict) -> bool:
         ("company-research", "Sources"),
     ]
     sections: list[str] = []
+    missing_sections: list[str] = []
     for stage, section in ordered:
         body = _extract_h2_section(stage_text.get(stage, ""), section)
         if not body:
-            body = _placeholder_section(section, f"Missing {stage} stage output")
+            missing_sections.append(f"{section} ({stage})")
+            continue
         sections.append(body)
+    if missing_sections:
+        detail = "missing interview stage section(s): " + ", ".join(missing_sections)
+        ctx.mark_partial("prep-interview_publish_gate", detail)
+        ctx.emit("validator", "prep-interview publish gate: FAIL")
+        if ctx.workflow == "prep-interview":
+            ctx.failure_class = ctx.failure_class or "prep_interview_stage_incomplete"
+        return False
     header = (
         f"> Position: {role.get('company', '')} - {role.get('title', '')}\n"
         f"> Job ID: {role.get('job_id', '')}\n"
@@ -3103,6 +5913,7 @@ def _validate_story_bank(ctx: RunContext) -> bool:
     if not isinstance(entries, list) or not entries:
         errors.append("story-bank.json entries must be a non-empty list")
     else:
+        seen_ids: set[str] = set()
         for i, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 errors.append(f"entry {i} must be an object")
@@ -3110,6 +5921,18 @@ def _validate_story_bank(ctx: RunContext) -> bool:
             missing = sorted(required - set(entry))
             if missing:
                 errors.append(f"entry {i} missing {', '.join(missing)}")
+                continue
+            story_id = str(entry.get("id", ""))
+            if not re.fullmatch(r"ST-\d{2,}", story_id):
+                errors.append(f"entry {i} has invalid story ID {story_id!r}")
+            elif story_id in seen_ids:
+                errors.append(f"entry {i} duplicates story ID {story_id}")
+            seen_ids.add(story_id)
+            for key in required - {"ev_refs"}:
+                if not str(entry.get(key, "")).strip():
+                    errors.append(f"entry {i} has empty {key}")
+            if not entry.get("ev_refs"):
+                errors.append(f"entry {i} has empty ev_refs")
     ctx.validator_results.append({
         "validator": "validate_story_bank",
         "target": str(path),
@@ -3118,7 +5941,18 @@ def _validate_story_bank(ctx: RunContext) -> bool:
     })
     ctx.emit("validator", "validate_story_bank: " + ("PASS" if not errors else "FAIL"))
     if errors:
-        ctx.emit("validator", "; ".join(errors)[:800])
+        detail = "; ".join(errors)[:800]
+        ctx.emit("validator", detail)
+        ctx.emit(
+            "attention",
+            "Interview prep needs a valid story bank. Run `rolescout run story-bank` "
+            "first, wait for it to complete, then rerun prep-interview.",
+        )
+        ctx.emit("error", f"prep-interview blocked by invalid story bank: {detail}")
+        ctx.summary = (
+            "Interview prep could not start because the story bank is invalid. "
+            "Run story-bank first, then retry prep-interview."
+        )
         ctx.failure_class = ctx.failure_class or "story_bank_validation_failure"
         return False
     return True
@@ -3156,17 +5990,56 @@ def _run_story_bank_workflow(ctx: RunContext, provider, context: dict, on_stream
 
 
 def _run_strategy_workflow(ctx: RunContext, provider, context: dict, on_stream) -> dict:
-    _prepare_processed_jds(ctx)
-    return _execute_subagent(
+    strategy_rows = _strategy_focused_job_rows(ctx.project)
+    _prepare_processed_jds(ctx, strategy_rows)
+    total_focused = len(_focused_job_rows(ctx.project))
+    ctx.emit(
+        "info",
+        f"prep-strategy scope: {len(strategy_rows)}/{total_focused} focused role(s) "
+        "have current scores; unscored/stale roles are excluded",
+    )
+    envelope = _execute_subagent(
         ctx, provider, "prep-strategy", context, on_stream,
         model_workflow="prep-strategy")
+    if (ctx.failure_class == "prep_strategy_publish_gate_failure"
+            and not ctx.blocked_reasons):
+        feedback = next((item.get("reason", "") for item in reversed(ctx.partial_reasons)
+                         if item.get("scope") == "prep-strategy_publish_gate"), "")
+        if feedback:
+            ctx.emit("validator", "prep-strategy publish gate: bounded repair retry")
+            ctx.failure_class = ""
+            ctx.partial_reasons = [
+                item for item in ctx.partial_reasons
+                if item.get("scope") != "prep-strategy_publish_gate"
+            ]
+            repair_context = json.loads(json.dumps(context))
+            packet = repair_context.get("runner_context_packet")
+            if isinstance(packet, dict):
+                packet["strategy_repair"] = {
+                    "validator_feedback": feedback[:2000],
+                    "instruction": (
+                        "Regenerate the complete artifact set. Consolidate compatible roles "
+                        "into a small number of positioning/resume groups; do not drop jobs."
+                    ),
+                }
+            retry = _execute_subagent(
+                ctx, provider, "prep-strategy", repair_context, on_stream,
+                label="prep-strategy-repair", model_workflow="prep-strategy")
+            _merge_usage(envelope, retry)
+    return envelope
 
 
 def _run_resume_workflow(ctx: RunContext, provider, context_for,
-                         stale_material: str, on_stream) -> dict:
+                         stale_material: str, on_stream,
+                         pdir: Path | None = None, *, aggregate: bool = False) -> dict:
+    if not _ensure_baseline_extracted(ctx, pdir):
+        return {"events": [], "usage": {}}
     _prepare_processed_jds(ctx)
-    groups = _focused_groups(ctx.project)
-    if not groups:
+    if aggregate:
+        groups, parked_groups = _groups_for_prep(ctx.project, {"pursue", "conditional"})
+    else:
+        groups, parked_groups = _focused_groups(ctx.project), []
+    if not groups and not parked_groups:
         ctx.failure_class = ctx.failure_class or "prep_resume_no_groups"
         ctx.emit("validator", "prep-resume group scope: FAIL (no focused groups)")
         return {"events": [], "usage": {}}
@@ -3181,15 +6054,37 @@ def _run_resume_workflow(ctx: RunContext, provider, context_for,
             "label": f"prep-resume-{index:03d}-{slug}",
             "context": context_for("prep-resume", stale_material, extra),
             "allowed_artifacts": _resume_group_allowed_artifacts(slug),
+            "repair_on_publish_fail": True,
+            "publish_repair_attempts": 2,
+            "repair_model_workflow": "prep-resume-repair",
         })
+    for group in parked_groups:
+        slug = str(group.get("slug") or "ungrouped")
+        reasons = _strategy_dispositions(ctx.project)
+        detail = next((reasons.get(str(row.get("job_id", "")), {}).get("reason", "")
+                       for row in group.get("jobs", []) if reasons.get(
+                           str(row.get("job_id", "")), {}).get("reason")),
+                      "Strategy marked every role in this group as parked.")
+        _write_artifact(ctx, {
+            "type": "artifact",
+            "path": f"resumes/{slug}/resume-not-generated.md",
+            "text": (f"# Resume not generated — {slug}\n\n{detail}\n\n"
+                     "Run `prep-resume` explicitly after changing focus or recording an override.\n"),
+        })
+        ctx.emit("artifact", f"parked group skipped without an LLM call: resumes/{slug}/resume-not-generated.md")
     return _run_parallel_named_subagents(
-        ctx, provider, jobs, on_stream, hard_fail_when_all_fail=True)
+        ctx, provider, jobs, on_stream, hard_fail_when_all_fail=False)
 
 
 def _run_linkedin_workflow(ctx: RunContext, provider, context_for,
-                           stale_material: str, on_stream) -> dict:
+                           stale_material: str, on_stream, *, aggregate: bool = False) -> dict:
     _prepare_processed_jds(ctx)
-    groups = _focused_groups(ctx.project)
+    groups = (_groups_for_prep(ctx.project, {"pursue", "conditional"})[0]
+              if aggregate else _focused_groups(ctx.project))
+    if not groups and aggregate:
+        ctx.emit("info", "prep-linkedin skipped: strategy has no pursue/conditional groups")
+        return {"events": [], "usage": {}, "published_labels": [],
+                "validation_failed_labels": []}
     if not groups:
         ctx.failure_class = ctx.failure_class or "prep_linkedin_no_groups"
         ctx.emit("validator", "prep-linkedin group scope: FAIL (no focused groups)")
@@ -3205,39 +6100,76 @@ def _run_linkedin_workflow(ctx: RunContext, provider, context_for,
             "label": f"prep-linkedin-{index:03d}-{slug}",
             "context": context_for("prep-linkedin", stale_material, extra),
             "allowed_artifacts": {expected},
+            "repair_on_publish_fail": True,
+            "publish_repair_attempts": 2,
+            "repair_model_workflow": "prep-linkedin-repair",
         })
     return _run_parallel_named_subagents(
-        ctx, provider, jobs, on_stream, hard_fail_when_all_fail=True)
+        ctx, provider, jobs, on_stream, hard_fail_when_all_fail=False)
 
 
 def _run_interview_workflow(ctx: RunContext, provider, context_for,
-                            stale_material: str, on_stream) -> dict:
+                            stale_material: str, on_stream, *, aggregate: bool = False) -> dict:
     envelope: dict = {"events": [], "usage": {}}
-    _prepare_processed_jds(ctx)
-    _build_interview_context(ctx)
-    if ctx.failure_class or ctx.blocked_reasons:
-        return envelope
-    roles = _load_interview_context_roles(ctx.project)
-    if not roles:
-        ctx.failure_class = ctx.failure_class or "prep_interview_no_roles"
-        ctx.emit("validator", "prep-interview role context: FAIL (no focused roles)")
-        return envelope
     story_bank = ctx.project / "interviews" / "story-bank.json"
     if not story_bank.exists():
         ctx.failure_class = ctx.failure_class or "story_bank_missing"
-        ctx.emit("validator", "story bank missing: run `rolescout run story-bank` first")
+        ctx.emit(
+            "attention",
+            "Interview prep needs a story bank. Run `rolescout run story-bank` first, "
+            "wait for it to complete, then rerun prep-interview.",
+        )
+        ctx.emit("error", "prep-interview blocked: interviews/story-bank.json is missing")
+        ctx.summary = (
+            "Interview prep could not start because the story bank is missing. "
+            "Run story-bank first, then retry prep-interview."
+        )
         return envelope
     if not _validate_story_bank(ctx):
         return envelope
+    roles = _load_interview_context_roles(ctx.project)
+    if aggregate:
+        dispositions = _strategy_dispositions(ctx.project)
+        roles = [role for role in roles if dispositions.get(
+            str(role.get("job_id", "")), {"disposition": "pursue"}
+        )["disposition"] == "pursue"]
+    if roles and _reuse_current_interview_packs(ctx, roles):
+        return envelope
+    _prepare_processed_jds(ctx)
+    scoped_job_ids = None
+    if aggregate:
+        dispositions = _strategy_dispositions(ctx.project)
+        scoped_job_ids = {
+            job_id for job_id, item in dispositions.items()
+            if item.get("disposition") == "pursue"
+        }
+    _build_interview_context(ctx, scoped_job_ids=scoped_job_ids)
+    if ctx.failure_class or ctx.blocked_reasons:
+        return envelope
+    roles = _load_interview_context_roles(ctx.project)
+    if aggregate:
+        dispositions = _strategy_dispositions(ctx.project)
+        roles = [role for role in roles if dispositions.get(
+            str(role.get("job_id", "")), {"disposition": "pursue"}
+        )["disposition"] == "pursue"]
+    if not roles:
+        if aggregate:
+            ctx.emit("info", "prep-interview skipped: strategy has no pursue roles")
+            return envelope
+        ctx.failure_class = ctx.failure_class or "prep_interview_no_roles"
+        ctx.emit("validator", "prep-interview role context: FAIL (no focused roles)")
+        return envelope
 
     def _run_role_packets(quality_retry: str | None = None,
-                          only_expected: set[str] | None = None) -> None:
+                          only_expected: set[str] | None = None,
+                          retry_all_stages: bool = False) -> None:
         for index, role in enumerate(roles, start=1):
             expected = _interview_expected_artifact(role)
             if only_expected is not None and expected not in only_expected:
                 continue
             before = set(ctx.artifacts_written)
-            stages = ["whys"] if quality_retry else ["company-research", "whys", "qa"]
+            stages = (["company-research", "whys", "qa"]
+                      if retry_all_stages or not quality_retry else ["whys"])
             for stage in stages:
                 stage_expected = _interview_stage_artifact(role, stage)
                 label_prefix = "prep-interview-retry" if quality_retry else "prep-interview"
@@ -3273,7 +6205,8 @@ def _run_interview_workflow(ctx: RunContext, provider, context_for,
                         label=f"{label}-path-retry", model_workflow="prep-interview",
                         allowed_artifacts={stage_expected})
                     _merge_usage(envelope, retry_child)
-            _assemble_interview_prep(ctx, role)
+            if not _assemble_interview_prep(ctx, role):
+                continue
             if expected not in set(ctx.artifacts_written) - before and expected not in ctx.artifacts_written:
                 ctx.mark_partial(
                     "prep-interview_artifact_missing",
@@ -3296,10 +6229,16 @@ def _run_interview_workflow(ctx: RunContext, provider, context_for,
         })
         ctx.emit("validator", "post-run validate_interview_prep: "
                  f"{'PASS' if result.returncode == 0 else 'QUALITY' if result.returncode == 2 else 'FAIL'}")
-        if result.returncode == 2:
-            ctx.emit("validator", "prep-interview quality retry: QUALITY")
+        if result.returncode != 0:
+            retry_kind = "quality" if result.returncode == 2 else "validation"
+            ctx.emit("validator", f"prep-interview {retry_kind} retry: "
+                     f"{'QUALITY' if result.returncode == 2 else 'FAIL'}")
             retry_paths = _interview_validator_paths(out)
-            _run_role_packets(out, only_expected=retry_paths or None)
+            _run_role_packets(
+                out,
+                only_expected=retry_paths or None,
+                retry_all_stages=result.returncode != 2,
+            )
             retry = core.run_script("validate_interview_prep", str(ctx.project),
                                     env=_env_for(ctx.project))
             retry_out = (retry.stdout + retry.stderr).strip()
@@ -3317,9 +6256,6 @@ def _run_interview_workflow(ctx: RunContext, provider, context_for,
             elif retry.returncode != 0:
                 ctx.failure_class = ctx.failure_class or "prep-interview_validation_failure"
                 ctx.emit("validator", retry_out[:800])
-        elif result.returncode != 0:
-            ctx.failure_class = ctx.failure_class or "prep-interview_validation_failure"
-            ctx.emit("validator", out[:800])
     return envelope
 
 
@@ -3328,62 +6264,122 @@ def _run_prep_orchestration(ctx: RunContext, provider, context_for, stale_materi
                             linkedin_source: Path | None) -> dict:
     """Full prep is an orchestrator, not a monolithic profile-building agent.
 
-    Order: strategy first, resume + LinkedIn in parallel when LinkedIn current
-    content exists, then interview after both downstream artifacts have had a
-    chance to land.
+    Strategy is the only global dependency. Downstream phases publish
+    independently: a failed resume group does not suppress LinkedIn, the last
+    valid story bank can support interview, and the overall run becomes partial
+    when only a subset publishes.
     """
     envelope: dict = {"events": [], "usage": {}}
 
+    _update_prep_progress(ctx, "strategy", "running")
     strategy = _run_strategy_workflow(
         ctx, provider, context_for("prep-strategy", stale_material), on_stream)
     _merge_usage(envelope, strategy)
     if ctx.failure_class or ctx.blocked_reasons:
+        _update_prep_progress(ctx, "strategy", "failed",
+                              detail=ctx.failure_class or "blocked")
         return envelope
+    _update_prep_progress(ctx, "strategy", "published")
 
+    _update_prep_progress(ctx, "resume", "running")
     resume = _run_resume_workflow(
-        ctx, provider, context_for, stale_material, on_stream)
+        ctx, provider, context_for, stale_material, on_stream, pdir, aggregate=True)
     _merge_usage(envelope, resume)
-    if ctx.failure_class or ctx.blocked_reasons:
+    if ctx.blocked_reasons:
+        _update_prep_progress(ctx, "resume", "blocked")
         return envelope
+    if ctx.failure_class:
+        reason = ctx.failure_class
+        ctx.failure_class = ""
+        ctx.mark_partial("prep-resume", reason)
+        ctx.emit("info", f"prep-resume incomplete ({reason}); continuing independent phases")
+    resume_failed = len(resume.get("validation_failed_labels", []))
+    _update_prep_progress(
+        ctx, "resume", "partial" if resume_failed else "published",
+        completed=len(resume.get("published_labels", [])),
+        total=(len(resume.get("published_labels", [])) + resume_failed),
+        detail=(f"{resume_failed} group(s) retained in staging" if resume_failed else ""),
+    )
 
     from .. import profile_meta
     linkedin_url = profile_meta.linkedin_url(pdir)
-    if linkedin_url and linkedin_source:
-        rc = _run_linkedin_capture_helper(ctx, linkedin_url, linkedin_source,
-                                          required=False)
-        if rc == 0 and linkedin_source.exists() and linkedin_source.stat().st_size > 0:
-            linkedin = _run_linkedin_workflow(
-                ctx, provider, context_for, stale_material, on_stream)
-            _merge_usage(envelope, linkedin)
-        else:
-            ctx.emit("info", "warning: LinkedIn current profile is unavailable; "
-                     "skipping prep-linkedin. Add a LinkedIn URL and complete "
-                     "the supported capture/import step, then rerun prep-linkedin.")
+    if (linkedin_url and linkedin_source and linkedin_source.exists()
+            and linkedin_source.stat().st_size > 0):
+        _update_prep_progress(ctx, "linkedin", "running")
+        linkedin = _run_linkedin_workflow(
+            ctx, provider, context_for, stale_material, on_stream, aggregate=True)
+        _merge_usage(envelope, linkedin)
+        linkedin_failed = len(linkedin.get("validation_failed_labels", []))
+        _update_prep_progress(
+            ctx, "linkedin", "partial" if linkedin_failed else "published",
+            completed=len(linkedin.get("published_labels", [])),
+            total=(len(linkedin.get("published_labels", [])) + linkedin_failed),
+            detail=(f"{linkedin_failed} group(s) retained in staging" if linkedin_failed else ""),
+        )
+    elif linkedin_url:
+        ctx.emit("attention", "prep-linkedin skipped: the saved LinkedIn URL has no "
+                 "captured profile yet. Open Profile and choose Resync LinkedIn "
+                 "profile, then rerun prep-linkedin.")
+        _update_prep_progress(ctx, "linkedin", "skipped", detail="profile capture unavailable")
     else:
         ctx.emit("info", "warning: no LinkedIn URL/current profile; skipping "
                  "prep-linkedin. Add the URL in the profile form and complete "
                  "LinkedIn import/capture before LinkedIn review.")
+        _update_prep_progress(ctx, "linkedin", "skipped", detail="no LinkedIn profile")
 
-    if ctx.failure_class or ctx.blocked_reasons:
+    if ctx.blocked_reasons:
         return envelope
+    if ctx.failure_class:
+        reason = ctx.failure_class
+        ctx.failure_class = ""
+        ctx.mark_partial("prep-linkedin", reason)
+        ctx.emit("info", f"prep-linkedin incomplete ({reason}); continuing independent phases")
 
     if _story_bank_needs_refresh(ctx.project, pdir):
+        _update_prep_progress(ctx, "story-bank", "running")
         story = _run_story_bank_workflow(
             ctx, provider, context_for("story-bank", stale_material), on_stream)
         _merge_usage(envelope, story)
-        if ctx.failure_class or ctx.blocked_reasons:
+        if ctx.blocked_reasons:
             return envelope
+        if ctx.failure_class:
+            reason = ctx.failure_class
+            ctx.failure_class = ""
+            ctx.mark_partial("story-bank", reason)
+            ctx.emit("info", f"story-bank refresh incomplete ({reason}); trying last valid bank")
+            _update_prep_progress(ctx, "story-bank", "partial", detail=reason)
+        else:
+            _update_prep_progress(ctx, "story-bank", "published")
 
+    if not (ctx.project / "interviews" / "story-bank.json").exists():
+        ctx.mark_partial("prep-interview", "story bank unavailable; interview phase skipped")
+        ctx.emit("info", "prep-interview skipped: no valid story bank is available")
+        _update_prep_progress(ctx, "interview", "skipped", detail="story bank unavailable")
+        _update_prep_progress(ctx, "complete", "partial")
+        return envelope
+    _update_prep_progress(ctx, "interview", "running")
     interview = _run_interview_workflow(
-        ctx, provider, context_for, stale_material, on_stream)
+        ctx, provider, context_for, stale_material, on_stream, aggregate=True)
     _merge_usage(envelope, interview)
+    if ctx.failure_class and (ctx.publish_results or ctx.artifacts_written):
+        reason = ctx.failure_class
+        ctx.failure_class = ""
+        ctx.mark_partial("prep-interview", reason)
+        ctx.emit("info", f"prep-interview incomplete ({reason}); earlier published artifacts retained")
+        _update_prep_progress(ctx, "interview", "partial", detail=reason)
+    else:
+        _update_prep_progress(ctx, "interview", "published")
+    _update_prep_progress(
+        ctx, "complete", "partial" if ctx.partial_reasons else "published"
+    )
     return envelope
 
 
 def run_profile_intake(person: str, project: Path | None = None, task: str | None = None,
                        force_mock: bool = False, max_turns: int = 40,
                        telemetry_path: Path | None = None, on_event=None,
-                       cancel_event=None) -> dict:
+                       cancel_event=None, capture_linkedin: bool = True,
+                       skip_if_unchanged: bool = False) -> dict:
     """Person-scoped profile/evidence intake.
 
     This lane is intentionally independent of project creation, job search, and
@@ -3391,6 +6387,8 @@ def run_profile_intake(person: str, project: Path | None = None, task: str | Non
     explicit CLI run.
     """
     from .. import profile_meta
+    from ..privacy.disclosure import disclosure_lines
+    from ..privacy.source_extract import profile_source_packet
     from . import preflight as _pf
 
     person = str(person or "").strip()
@@ -3428,6 +6426,9 @@ def run_profile_intake(person: str, project: Path | None = None, task: str | Non
     provider = llm.get_provider(force_mock)
     ctx.emit("info", f"run {run_id}: workflow={PROFILE_WORKFLOW} "
              f"mode={mode} person={person} backend={provider.name}")
+    if mode == "live":
+        for line in disclosure_lines(PROFILE_WORKFLOW, provider.name):
+            ctx.emit("info", line)
     linkedin_source = pdir / "linkedin-current.md"
 
     def _on_stream(text: str) -> None:
@@ -3437,30 +6438,40 @@ def run_profile_intake(person: str, project: Path | None = None, task: str | Non
     def _profile_context(active_workflow: str, stale_material: str) -> dict:
         return {
             "project": str(pdir),
-            "profile_dir": str(pdir),
-            "person": person,
             "task": task,
-            "skills": WORKFLOW_SKILLS[active_workflow],
-            "max_turns": max_turns,
-            "focused_jobs": None,
             "profile_stale": stale_material if active_workflow == PROFILE_WORKFLOW else "",
             "profile_ready": _profile_ready(pdir),
-            "linkedin_url": profile_meta.linkedin_url(pdir),
-            "linkedin_source_path": str(linkedin_source),
-            "targets": "",
-            "instructions": profile_meta.instructions(pdir),
+            "profile_source_packet": profile_source_packet(pdir),
         }
 
     envelope: dict = {"events": [], "usage": {}}
+    ran_model = False
     try:
         linkedin_url = profile_meta.linkedin_url(pdir)
-        if mode == "live" and linkedin_url:
-            _run_linkedin_capture_helper(ctx, linkedin_url, linkedin_source,
-                                         required=False)
-        stale_material = _pf._stale_profile(pdir)
-        envelope = _execute_subagent(
-            ctx, provider, PROFILE_WORKFLOW,
-            _profile_context(PROFILE_WORKFLOW, stale_material), _on_stream)
+        if mode == "live" and linkedin_url and capture_linkedin:
+            pending_linkedin = pdir / ".linkedin-current.pending.md"
+            pending_linkedin.unlink(missing_ok=True)
+            rc = _run_linkedin_capture_helper(
+                ctx, linkedin_url, pending_linkedin, required=True
+            )
+            if rc == 0 and pending_linkedin.exists() and pending_linkedin.stat().st_size > 0:
+                os.replace(pending_linkedin, linkedin_source)
+                ctx.emit("artifact", "linkedin-current.md updated from explicit capture")
+            else:
+                pending_linkedin.unlink(missing_ok=True)
+        if not ctx.failure_class and not ctx.blocked_reasons:
+            if skip_if_unchanged and profile_meta.profile_is_current(pdir):
+                ctx.summary = "LinkedIn resynced; captured profile content is unchanged, so no model call was needed."
+                ctx.emit("result", ctx.summary)
+            else:
+                stale_material = _pf._stale_profile(pdir)
+                envelope = _execute_subagent(
+                    ctx, provider, PROFILE_WORKFLOW,
+                    _profile_context(PROFILE_WORKFLOW, stale_material), _on_stream,
+                    allowed_artifacts={
+                        "candidate-profile.md", "evidence-map.md", "capability-ledger.json"
+                    })
+                ran_model = True
         if (project is not None and not ctx.failure_class
                 and _profile_ready(pdir) and _story_bank_needs_refresh(project, pdir)):
             ctx.emit("info", "candidate profile/evidence map ready; refreshing story bank")
@@ -3527,6 +6538,9 @@ def run_profile_intake(person: str, project: Path | None = None, task: str | Non
             if score_ctx.summary:
                 ctx.summary = score_ctx.summary
             _merge_usage(envelope, score_envelope)
+        if ran_model and not ctx.failure_class and not ctx.blocked_reasons and _profile_ready(pdir):
+            fingerprint = profile_meta.mark_profile_built(pdir)
+            ctx.emit("artifact", f"profile source fingerprint committed: {fingerprint[:12]}")
         _post_run_checks(ctx)
     except RunCancelled:
         ctx.failure_class = "cancelled"
@@ -3589,9 +6603,54 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
     if mode == "live":
         from . import preflight
         blocking, warnings = preflight.check(workflow, project)
+        repair = preflight.profile_repair_candidate(workflow, project)
+        if repair:
+            ctx.emit(
+                "attention",
+                f"{repair['reason']}; running profile-intake once before retrying {workflow}.",
+            )
+            repair_rec = run_profile_intake(
+                repair["person"],
+                task=f"Auto-repair profile prerequisites before {workflow}.",
+                force_mock=force_mock,
+                max_turns=max_turns,
+                telemetry_path=telemetry_path,
+                on_event=on_event,
+                cancel_event=cancel_event,
+            )
+            repair_ok = repair_rec.get("status") == "ok"
+            ctx.validator_results.append({
+                "validator": "profile_intake_auto_repair",
+                "target": repair["person"],
+                "returncode": 0 if repair_ok else 1,
+                "output": str(repair_rec.get("summary", ""))[:800],
+            })
+            if repair_ok:
+                ctx.emit("result", "Profile intake completed; retrying prep preflight now.")
+            else:
+                ctx.emit(
+                    "error",
+                    "Automatic profile intake did not complete successfully; "
+                    "prep will remain blocked rather than using ungrounded evidence.",
+                )
+            blocking, warnings = preflight.check(workflow, project)
         for w in warnings:
             ctx.emit("info", f"preflight WARN: {w}")
         if blocking:
+            if (workflow in FOCUS_SCOPED
+                    and preflight.focused_job_count(project) == 0):
+                ctx.emit(
+                    "attention",
+                    "Select focused roles first — open Jobs and star at least one role "
+                    "before running prep.",
+                )
+            if (workflow == "prep-interview"
+                    and any("story bank" in item.lower() for item in blocking)):
+                ctx.emit(
+                    "attention",
+                    "Build the story bank first — run story-bank, wait for it to "
+                    "complete, then run prep-interview again.",
+                )
             for item in blocking:
                 ctx.mark_blocked("preflight", item)
             ctx.summary = "Blocked by preflight: " + "; ".join(blocking)
@@ -3609,10 +6668,14 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
     ctx.emit("info", f"run {run_id}: workflow={workflow} mode={mode} "
              f"project={project.name} backend={backend_name}")
     from .. import profile_meta, project_meta
+    from ..privacy.disclosure import disclosure_lines
     from . import preflight as _pf
     pdir = _pf.profile_dir(project)
     linkedin_source = pdir / "linkedin-current.md" if pdir else None
     run_intent = _build_run_intent(project, workflow, task)
+    if mode == "live" and provider is not None:
+        for line in disclosure_lines(workflow, provider.name):
+            ctx.emit("info", line)
 
     def _on_stream(text: str) -> None:
         ctx.check_cancelled()  # providers stream through here — kills the agent call
@@ -3620,7 +6683,6 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
 
     def _provider_context(active_workflow: str, stale_material: str,
                           extra: dict | None = None) -> dict:
-        phase = extra.get("search_phase") if extra else None
         role_packet = (
             extra.get("interview_role_packet")
             if active_workflow == "prep-interview" and isinstance(extra, dict)
@@ -3636,6 +6698,11 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
             if active_workflow == "prep-linkedin" and isinstance(extra, dict)
             else None
         )
+        application_role_packet = (
+            extra.get("application_role_packet")
+            if active_workflow == "apply" and isinstance(extra, dict)
+            else None
+        )
         scoped_role = role_packet.get("role") if isinstance(role_packet, dict) else None
         scoped_group_slug = ""
         if isinstance(resume_group_packet, dict):
@@ -3646,23 +6713,32 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
         scoped_group = scoped_groups[0] if scoped_groups else None
         payload = {
             "project": str(project), "task": task,
-            "skills": skills_for_workflow_phase(active_workflow, phase),
-            "max_turns": max_turns,
             "focused_jobs": (
                 [scoped_role] if isinstance(scoped_role, dict)
                 else list(scoped_group.get("jobs", [])) if isinstance(scoped_group, dict)
+                else _strategy_focused_job_rows(project)
+                if active_workflow == "prep-strategy"
                 else focused_jobs(project) if active_workflow in FOCUS_SCOPED
                 else None
             ),
             "profile_stale": stale_material if active_workflow in FOCUS_SCOPED else "",
             "profile_ready": _profile_ready(pdir),
-            "linkedin_url": profile_meta.linkedin_url(pdir),
-            "profile_dir": str(pdir) if pdir else "",
-            "linkedin_source_path": str(linkedin_source) if linkedin_source else "",
             "targets": project_meta.targets_text(project),
-            "instructions": profile_meta.instructions(pdir),
             "run_intent": run_intent,
+            "profile_dir": str(pdir) if pdir else "",
         }
+        if active_workflow == "opportunity-plan":
+            resolver = core.load("resolve_company_sources")
+            registry = resolver.load_registered_registry()
+            unique_entries: dict[str, dict] = {}
+            for entry in registry.values():
+                if not isinstance(entry, dict) or not entry.get("name"):
+                    continue
+                unique_entries.setdefault(str(entry["name"]), {
+                    "name": str(entry["name"]),
+                    "source_kind": str(entry.get("source_kind", "")),
+                })
+            payload["universe_seed_catalog"] = list(unique_entries.values())[:100]
         if extra:
             payload.update(extra)
         if active_workflow in {"prep-strategy", "prep-resume", "prep-linkedin",
@@ -3683,6 +6759,8 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
                 payload["runner_context_packet"] = _runner_linkedin_group_packet(
                     project, pdir, scoped_group
                 )
+            elif active_workflow == "apply" and isinstance(application_role_packet, dict):
+                payload["runner_context_packet"] = application_role_packet
             else:
                 payload["runner_context_packet"] = _runner_context_packet(
                     project, pdir, active_workflow
@@ -3693,23 +6771,38 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
     try:
         if mode == "live" and workflow == "prep-linkedin":
             linkedin_url = profile_meta.linkedin_url(pdir)
-            if linkedin_url and linkedin_source:
-                rc = _run_linkedin_capture_helper(ctx, linkedin_url, linkedin_source,
-                                                  required=True)
-                if rc != 0:
-                    rec = _record_run(ctx, run_id, started, t0, {"events": []})
-                    tstore.record_run(rec, path=telemetry_path)
-                    ctx.emit("info", f"telemetry: run {run_id} recorded "
-                             f"({len(ctx.validator_results)} validator result(s), "
-                             f"status={rec['status']})")
-                    return rec
+            if not linkedin_url:
+                ctx.mark_blocked(
+                    "linkedin_url_missing",
+                    "No LinkedIn URL is saved. Add it in Profile and save before running "
+                    "prep-linkedin.",
+                )
+            elif not linkedin_source or not linkedin_source.exists() or linkedin_source.stat().st_size == 0:
+                ctx.mark_blocked(
+                    "linkedin_source_missing",
+                    "The LinkedIn URL is saved, but no captured profile is available. Open "
+                    "Profile and choose Resync LinkedIn profile before running prep-linkedin.",
+                )
+            if ctx.blocked_reasons:
+                ctx.failure_class = ctx.failure_class or "linkedin_profile_not_synced"
+                ctx.summary = ctx.blocked_reasons[-1]["detail"]
+                ctx.emit("attention", ctx.summary)
+                rec = _record_run(ctx, run_id, started, t0, {"events": []})
+                tstore.record_run(rec, path=telemetry_path)
+                ctx.emit("info", f"telemetry: run {run_id} recorded "
+                         f"({len(ctx.validator_results)} validator result(s), "
+                         f"status={rec['status']})")
+                return rec
 
         ctx.check_cancelled()
         stale_material = _pf._stale_profile(pdir) if pdir else ""
         if mode == "mock":
+            mock_allowed = ({"targets/company-universe.json"}
+                            if workflow == "opportunity-plan" else None)
             envelope = _execute_subagent(
                 ctx, provider, workflow,
-                _provider_context(workflow, stale_material), _on_stream)
+                _provider_context(workflow, stale_material), _on_stream,
+                allowed_artifacts=mock_allowed)
         elif workflow == "prep":
             envelope = _run_prep_orchestration(
                 ctx, provider, _provider_context, stale_material,
@@ -3721,6 +6814,10 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
                 envelope = _run_search_orchestration(
                     ctx, provider, _provider_context, stale_material,
                     _on_stream, run_intent=run_intent)
+        elif workflow == "opportunity-plan":
+            envelope = _run_progressive_universe(
+                ctx, provider, _provider_context(workflow, stale_material), _on_stream
+            )
         elif workflow == "score":
             envelope = _run_score_workflow(
                 ctx, provider, _provider_context("score", stale_material), _on_stream)
@@ -3729,59 +6826,65 @@ def run_workflow(workflow: str, project: Path | None = None, task: str | None = 
                 ctx, provider, _provider_context("prep-strategy", stale_material), _on_stream)
         elif workflow == "prep-resume":
             envelope = _run_resume_workflow(
-                ctx, provider, _provider_context, stale_material, _on_stream)
+                ctx, provider, _provider_context, stale_material, _on_stream, pdir)
         elif workflow == "prep-linkedin":
             envelope = _run_linkedin_workflow(
                 ctx, provider, _provider_context, stale_material, _on_stream)
         elif workflow == "story-bank":
-            envelope = _run_story_bank_workflow(
-                ctx, provider, _provider_context("story-bank", stale_material), _on_stream)
+            if _ensure_baseline_extracted(ctx, pdir):
+                envelope = _run_story_bank_workflow(
+                    ctx, provider, _provider_context("story-bank", stale_material), _on_stream)
+            else:
+                envelope = {"events": [], "usage": {}}
         elif workflow == "prep-interview":
             envelope = _run_interview_workflow(
                 ctx, provider, _provider_context, stale_material, _on_stream)
+        elif workflow == "apply":
+            envelope = _run_apply_workflow(
+                ctx, provider, _provider_context, stale_material, _on_stream,
+                pdir, task, run_intent,
+            )
         else:
             envelope = _execute_subagent(
                 ctx, provider, workflow,
                 _provider_context(workflow, stale_material), _on_stream)
-        auto_score = os.environ.get("ROLESCOUT_SEARCH_AUTO_SCORE", "").strip().lower() in {
-            "1", "true", "yes", "on"
-        }
-        if (workflow == "search" and not deterministic_search
-                and not ctx.failure_class and not ctx.blocked_reasons):
-            if ctx.partial_reasons:
-                ctx.emit("info", "search finished with partial coverage; "
-                         "running score once for captured rows")
-            else:
-                ctx.emit("info", "search complete; running score once")
-            score_envelope = _run_score_workflow(
-                ctx, provider, _provider_context("score", stale_material), _on_stream)
-            _merge_usage(envelope, score_envelope)
-            if ctx.summary and not ctx.summary.startswith("search + "):
-                ctx.summary = f"search + {ctx.summary}"
-        elif (workflow == "search" and deterministic_search and auto_score
-              and not ctx.failure_class and not ctx.blocked_reasons):
-            provider = llm.get_provider(force_mock)
-            ctx.emit("info", "deterministic search complete; running optional score once")
-            score_envelope = _run_score_workflow(
-                ctx, provider, _provider_context("score", stale_material), _on_stream)
-            _merge_usage(envelope, score_envelope)
         if mode != "mock" and not ctx.blocked_reasons:
             _post_run_checks(ctx)
     except RunCancelled:
         saved = False
+        saved_scores = 0
         if workflow == "search":
             saved = _salvage_search_results(
                 ctx,
                 "Run cancelled by user; saving job rows captured before the stop.",
             )
+        elif workflow == "score":
+            try:
+                saved_scores = _salvage_score_checkpoint(ctx)
+            except Exception as salvage_error:
+                ctx.emit("error", f"checkpointed score publish failed: {salvage_error}")
+                saved_scores = 0
+            saved = saved_scores > 0
         ctx.failure_class = "cancelled"
-        if saved:
+        if saved_scores:
+            ctx.summary = (
+                f"Run cancelled by user; published {saved_scores} validated "
+                "checkpointed score rating(s)."
+            )
+            ctx.emit("result", ctx.summary)
+        elif saved:
             ctx.summary = "Run cancelled by user; saved captured job rows collected so far."
         elif not ctx.summary:
             ctx.summary = "Run cancelled by user."
         ctx.emit("info", "run cancelled — the agent was stopped")
     except Exception as e:
         _mark_exception(ctx, workflow, e)
+    if workflow == "prep":
+        final_state = {
+            "ok": "published", "partial": "partial", "blocked": "blocked",
+            "failed": "failed", "cancelled": "cancelled",
+        }.get(ctx.run_status(), ctx.run_status())
+        _update_prep_progress(ctx, "complete", final_state)
     rec = _record_run(ctx, run_id, started, t0, envelope)
     tstore.record_run(rec, path=telemetry_path)
     ctx.emit("info", f"telemetry: run {run_id} recorded "
@@ -3833,4 +6936,3 @@ def main(args) -> int:
     rec = run_workflow(args.workflow, project=project, task=task,
                        force_mock=args.mock, max_turns=args.max_turns)
     return _exit_code_for_status(rec["status"])
-

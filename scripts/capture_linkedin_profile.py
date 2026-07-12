@@ -13,39 +13,64 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import hashlib
 import importlib.util
 import json
 import os
-import random
+import re
 import shutil
 import socket
 import struct
 import subprocess
-import sys
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-# Expand every "…see more" toggle first (LinkedIn truncates Experience/About
-# descriptions), then read the profile's <main> region rather than <body> so the
-# capture is the actual profile — not the nav/notifications/footer chrome.
+# Scroll the full profile surface so LinkedIn lazy-loads Experience, Skills, and
+# Education, expand every "see more" toggle, then read <main> rather than body.
 CAPTURE_JS = r"""
 (async () => {
+  const root = document.querySelector('main#workspace') || document.querySelector('main') || document.body;
+  const candidates = [root, document.scrollingElement, document.documentElement, document.body]
+    .filter(Boolean);
+  const scroller = candidates.reduce((best, item) =>
+    ((item.scrollHeight - item.clientHeight) > (best.scrollHeight - best.clientHeight) ? item : best),
+    candidates[0]);
   try {
-    for (const b of Array.from(document.querySelectorAll('button, a[role=button]'))) {
-      const t = ((b.innerText || b.getAttribute('aria-label') || "")).toLowerCase();
-      if (/(see|show|…|\.\.\.)\s*more\b/.test(t) && !/less/.test(t)) {
-        try { b.click(); } catch (e) {}
+    let previousHeight = 0;
+    let stablePasses = 0;
+    for (let pass = 0; pass < 40; pass++) {
+      for (const b of Array.from(root.querySelectorAll('button, a[role=button]'))) {
+        const t = ((b.innerText || b.getAttribute('aria-label') || "")).toLowerCase();
+        if (/(see|show|…|\.\.\.)\s*more\b/.test(t) && !/less/.test(t)) {
+          try { b.click(); } catch (e) {}
+        }
       }
+      const height = scroller.scrollHeight;
+      const step = Math.max(scroller.clientHeight * 0.8, 650);
+      scroller.scrollTop = Math.min(height, (pass + 1) * step);
+      await new Promise(r => setTimeout(r, 350));
+      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 80;
+      stablePasses = (height === previousHeight && atBottom) ? stablePasses + 1 : 0;
+      if (pass > 5 && stablePasses >= 5) break;
+      previousHeight = height;
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 350));
   } catch (e) {}
-  const root = document.querySelector('main') || document.body;
-  const text = ((root && root.innerText) || "")
+  let contentRoot = root;
+  const detailMatch = location.pathname.match(/\/details\/(experience|skills|education)\/?/i);
+  if (detailMatch) {
+    const label = detailMatch[1].toLowerCase();
+    const exact = Array.from(root.querySelectorAll('h1,h2,h3,p,div'))
+      .filter(e => ((e.innerText || "").trim().toLowerCase() === label))
+      .sort((a, b) => (a.innerText || "").length - (b.innerText || "").length);
+    const section = exact.length ? exact[0].closest('section') : null;
+    if (section && (section.innerText || "").trim().length > 100) contentRoot = section;
+  }
+  const text = ((contentRoot && contentRoot.innerText) || "")
     .replace(/\r/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -57,14 +82,6 @@ CAPTURE_JS = r"""
 })()
 """
 
-# Playwright path: same "expand every see-more toggle" step, run before reading <main>.
-EXPAND_JS = r"""
-() => { for (const b of Array.from(document.querySelectorAll('button, a[role=button]'))) {
-  const t = ((b.innerText || b.getAttribute('aria-label') || "")).toLowerCase();
-  if (/(see|show|…|\.\.\.)\s*more\b/.test(t) && !/less/.test(t)) { try { b.click(); } catch (e) {} }
-} }
-"""
-
 
 def home_dir() -> Path:
     p = Path(os.environ.get("ROLESCOUT_HOME", Path.home() / ".rolescout")).expanduser()
@@ -72,12 +89,38 @@ def home_dir() -> Path:
     return p
 
 
+@functools.lru_cache(maxsize=1)
+def playwright_chromium() -> str:
+    if not has_playwright():
+        return ""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            path = str(p.chromium.executable_path or "")
+            return path if path and Path(path).exists() else ""
+    except Exception:
+        return ""
+
+
+@functools.lru_cache(maxsize=1)
 def find_chrome() -> str:
     for env in ("ROLESCOUT_CHROME", "CHROME_BIN", "GOOGLE_CHROME_SHIM"):
         val = os.environ.get(env)
         if val and Path(val).exists():
             return val
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    program_files = Path(os.environ.get("PROGRAMFILES", ""))
+    program_files_x86 = Path(os.environ.get("PROGRAMFILES(X86)", ""))
+    # Prefer Playwright's Chromium when present: it can use the same persistent
+    # profile as the Playwright fallback, so an authenticated session is not
+    # split between two otherwise independent browser profiles.
     candidates = [
+        playwright_chromium(),
+        program_files / "Google/Chrome/Application/chrome.exe",
+        program_files_x86 / "Google/Chrome/Application/chrome.exe",
+        local / "Google/Chrome/Application/chrome.exe",
+        program_files / "Microsoft/Edge/Application/msedge.exe",
+        program_files_x86 / "Microsoft/Edge/Application/msedge.exe",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
@@ -91,6 +134,29 @@ def find_chrome() -> str:
         if c and Path(c).exists():
             return str(c)
     return ""
+
+
+def browser_session_dir() -> Path:
+    override = os.environ.get("ROLESCOUT_LINKEDIN_BROWSER_PROFILE", "").strip()
+    if override:
+        path = Path(override).expanduser()
+    else:
+        root = home_dir() / "browser"
+        shared = root / "linkedin-session"
+        legacy_playwright = root / "linkedin-playwright"
+        legacy_cdp = root / "linkedin-chrome-devtools"
+        # Preserve an existing authenticated installation while converging all
+        # browser backends on one session directory.
+        if shared.exists():
+            path = shared
+        elif legacy_playwright.exists():
+            path = legacy_playwright
+        elif legacy_cdp.exists():
+            path = legacy_cdp
+        else:
+            path = shared
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def has_playwright() -> bool:
@@ -289,7 +355,57 @@ def useful_profile(payload: dict) -> bool:
     if len(text) < 300:
         return False
     bad = ("sign in to linkedin", "join linkedin", "security verification", "captcha")
-    return not any(marker in lower for marker in bad)
+    if any(marker in lower for marker in bad):
+        return False
+    # A top-card/footer-only capture is not a usable current LinkedIn source.
+    # About is optional, but the three structured recruiter surfaces must load.
+    required = ("experience", "skills", "education")
+    return all(re.search(rf"(?:^|\n)\s*{marker}(?:\s*\(\d+\))?\s*(?:\n|$)", lower)
+               for marker in required)
+
+
+def authenticated_linkedin(payload: dict) -> bool:
+    url = (payload.get("url") or "").lower()
+    text = (payload.get("text") or "").strip().lower()
+    if "linkedin.com" not in url or "/login" in url or "checkpoint" in url:
+        return False
+    if len(text) < 200:
+        return False
+    return not any(marker in text[:1200] for marker in (
+        "sign in to linkedin", "join linkedin", "security verification", "captcha"
+    ))
+
+
+def profile_surface_urls(url: str) -> list[tuple[str, str]]:
+    parsed = urllib.parse.urlsplit(url)
+    path = parsed.path.rstrip("/")
+    base = urllib.parse.urlunsplit((parsed.scheme or "https", parsed.netloc, path, "", ""))
+    return [
+        ("Profile", base + "/"),
+        ("Experience", base + "/details/experience/"),
+        ("Skills", base + "/details/skills/"),
+        ("Education", base + "/details/education/"),
+    ]
+
+
+def surface_ready(payload: dict, label: str) -> bool:
+    if not authenticated_linkedin(payload):
+        return False
+    text = str(payload.get("text", ""))
+    if label == "Profile":
+        return "linkedin.com/in/" in str(payload.get("url", "")).lower()
+    return bool(re.search(
+        rf"(?:^|\n)\s*{re.escape(label)}(?:\s*\(\d+\))?\s*(?:\n|$)",
+        text,
+        re.I,
+    ))
+
+
+def combined_surface_text(surfaces: list[tuple[str, dict]]) -> str:
+    return "\n\n".join(
+        f"### {label} surface\n\n{str(payload.get('text', '')).strip()}"
+        for label, payload in surfaces
+    ).strip()
 
 
 def should_navigate_to_profile(payload: dict) -> bool:
@@ -339,8 +455,7 @@ def run_chrome_devtools(url: str, out: Path, timeout_s: int) -> int:
     chrome = find_chrome()
     if not chrome:
         return 10
-    user_data = home_dir() / "browser" / "linkedin-chrome-devtools"
-    user_data.mkdir(parents=True, exist_ok=True)
+    user_data = browser_session_dir()
     port = free_port()
     cmd = [
         chrome,
@@ -351,9 +466,12 @@ def run_chrome_devtools(url: str, out: Path, timeout_s: int) -> int:
         "--no-default-browser-check",
         url,
     ]
+    print(f"Chrome DevTools using shared browser session: {user_data}", flush=True)
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    client: CDPClient | None = None
     try:
         if not wait_for_devtools(port):
+            print("Chrome DevTools endpoint did not become ready.", flush=True)
             return 10
         ws_url = target_from_list(port, url)
         client = CDPClient(ws_url)
@@ -367,24 +485,50 @@ def run_chrome_devtools(url: str, out: Path, timeout_s: int) -> int:
                 flush=True,
             )
             deadline = time.monotonic() + timeout_s
-            last_nav = 0.0
-            while time.monotonic() < deadline:
-                payload = evaluate_page(client)
-                if useful_profile(payload):
-                    write_capture(out, "chrome-devtools", url,
-                                  payload.get("title", ""), payload.get("url", ""),
-                                  payload.get("text", ""))
-                    print(f"captured LinkedIn profile source -> {out}", flush=True)
-                    return 0
-                if should_navigate_to_profile(payload) and time.monotonic() - last_nav > 10:
-                    client.call("Page.navigate", {"url": url})
-                    last_nav = time.monotonic()
+            surfaces: list[tuple[str, dict]] = []
+            for index, (label, surface_url) in enumerate(profile_surface_urls(url)):
+                client.call("Page.navigate", {"url": surface_url})
                 time.sleep(2)
+                surface_deadline = deadline if index == 0 else min(deadline, time.monotonic() + 45)
+                payload: dict = {}
+                while time.monotonic() < surface_deadline:
+                    payload = evaluate_page(client)
+                    if surface_ready(payload, label):
+                        break
+                    time.sleep(2)
+                if not surface_ready(payload, label):
+                    print(f"Chrome DevTools did not load the {label} surface.", flush=True)
+                    return 3 if not authenticated_linkedin(payload) else 10
+                surfaces.append((label, payload))
+            text = combined_surface_text(surfaces)
+            combined = {"url": url, "text": text}
+            if not useful_profile(combined):
+                print("Chrome DevTools capture was incomplete after all profile surfaces.",
+                      flush=True)
+                return 10
+            first = surfaces[0][1]
+            write_capture(out, "chrome-devtools", url,
+                          first.get("title", ""), first.get("url", ""), text)
+            print(f"captured LinkedIn profile source -> {out}", flush=True)
+            return 0
         finally:
+            try:
+                client.call("Browser.close", timeout_s=5)
+            except Exception:
+                pass
             client.close()
+    except Exception as exc:
+        print(f"Chrome DevTools capture failed: {type(exc).__name__}: {exc}", flush=True)
+        return 10
     finally:
-        if proc.poll() is not None:
-            proc.wait(timeout=1)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
     print(login_needed_message("Chrome DevTools"), flush=True)
     return 3
 
@@ -396,13 +540,12 @@ def run_playwright(url: str, out: Path, timeout_s: int) -> int:
         from playwright.sync_api import sync_playwright
     except Exception:
         return 10
-    user_data = home_dir() / "browser" / "linkedin-playwright"
-    user_data.mkdir(parents=True, exist_ok=True)
+    user_data = browser_session_dir()
     try:
         with sync_playwright() as p:
             ctx = p.chromium.launch_persistent_context(str(user_data), headless=False)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            print(f"Playwright using shared browser session: {user_data}", flush=True)
             print(
                 "USER_ACTION_REQUIRED: Playwright browser opened. Sign in to "
                 "LinkedIn there if prompted; this helper will capture the profile "
@@ -410,28 +553,36 @@ def run_playwright(url: str, out: Path, timeout_s: int) -> int:
                 flush=True,
             )
             deadline = time.monotonic() + timeout_s
-            last_nav = 0.0
-            while time.monotonic() < deadline:
-                try:
-                    page.evaluate(EXPAND_JS)
-                    page.wait_for_timeout(500)
-                except Exception:
-                    pass
-                main_loc = page.locator("main")
-                text = (main_loc.first.inner_text(timeout=2000)
-                        if main_loc.count() else
-                        page.locator("body").inner_text(timeout=2000))
-                payload = {"url": page.url, "title": page.title(), "text": text}
-                if useful_profile(payload):
-                    write_capture(out, "playwright", url, payload["title"],
-                                  payload["url"], payload["text"])
-                    print(f"captured LinkedIn profile source -> {out}", flush=True)
+            surfaces: list[tuple[str, dict]] = []
+            for index, (label, surface_url) in enumerate(profile_surface_urls(url)):
+                page.goto(surface_url, wait_until="domcontentloaded", timeout=60000)
+                surface_deadline = deadline if index == 0 else min(deadline, time.monotonic() + 45)
+                payload: dict = {}
+                while time.monotonic() < surface_deadline:
+                    try:
+                        raw = page.evaluate(CAPTURE_JS)
+                        payload = json.loads(raw) if isinstance(raw, str) else raw
+                    except Exception:
+                        payload = {"url": page.url, "title": page.title(), "text": ""}
+                    if surface_ready(payload, label):
+                        break
+                    time.sleep(2)
+                if not surface_ready(payload, label):
+                    print(f"Playwright did not load the {label} surface.", flush=True)
                     ctx.close()
-                    return 0
-                if should_navigate_to_profile(payload) and time.monotonic() - last_nav > 10:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    last_nav = time.monotonic()
-                time.sleep(2)
+                    return 3 if not authenticated_linkedin(payload) else 10
+                surfaces.append((label, payload))
+            text = combined_surface_text(surfaces)
+            if not useful_profile({"url": url, "text": text}):
+                print("Playwright capture was incomplete after all profile surfaces.", flush=True)
+                ctx.close()
+                return 10
+            first = surfaces[0][1]
+            write_capture(out, "playwright", url, first.get("title", ""),
+                          first.get("url", ""), text)
+            print(f"captured LinkedIn profile source -> {out}", flush=True)
+            ctx.close()
+            return 0
             ctx.close()
     except Exception as exc:
         print(f"Playwright capture failed: {exc}", flush=True)

@@ -15,6 +15,7 @@ import csv
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -67,8 +68,11 @@ def main() -> int:
 
         for f in ("applied_at", "next_action_due", "last_updated"):
             v = str(row.get(f, "")).strip()
-            if v and not re.match(ISO_DATE_RE, v):
-                errors.append(f"row {i}: {f}='{v}' is not YYYY-MM-DD")
+            if v:
+                try:
+                    date.fromisoformat(v)
+                except ValueError:
+                    errors.append(f"row {i}: {f}='{v}' is not a real YYYY-MM-DD date")
 
         v = str(row.get("outcome", "")).strip()
         if v not in OUTCOMES:

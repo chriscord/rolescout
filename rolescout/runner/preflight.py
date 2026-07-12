@@ -19,6 +19,10 @@ from pathlib import Path
 from ..paths import repo_root
 
 MATERIAL_SUFFIXES = {".md", ".txt", ".pdf", ".docx", ".doc", ".html"}
+PROFILE_REPAIR_WORKFLOWS = {
+    "prep", "prep-strategy", "prep-resume", "prep-linkedin",
+    "prep-interview", "story-bank",
+}
 
 
 def profile_dir(project: Path) -> Path | None:
@@ -109,6 +113,106 @@ def _csv_rows(path: Path) -> int:
         return sum(1 for _ in csv.DictReader(f))
 
 
+def profile_repair_candidate(workflow: str, project: Path) -> dict | None:
+    """Describe an automatically repairable profile prerequisite.
+
+    Prep may rebuild generated profile artifacts once when source material is
+    already present. It must not pretend it can repair an absent resume/LinkedIn
+    source, and focused-role selection remains an explicit user decision.
+    """
+    if workflow not in PROFILE_REPAIR_WORKFLOWS:
+        return None
+    pdir = profile_dir(project)
+    if pdir is None:
+        return None
+    has_prof, has_ev = _has_profile(pdir)
+    stale = _stale_profile(pdir)
+    from ..profile_meta import linkedin_url
+    has_source = _has_materials(pdir) or bool(linkedin_url(pdir))
+    if not has_source or (has_prof and has_ev and not stale):
+        return None
+    if stale:
+        reason = f"profile artifacts are stale because '{stale}' is newer"
+    elif not has_prof and not has_ev:
+        reason = "candidate profile and evidence map are missing"
+    elif not has_prof:
+        reason = "candidate profile is missing"
+    else:
+        reason = "evidence map is missing"
+    return {"profile_dir": pdir, "person": pdir.name, "reason": reason}
+
+
+def focused_job_count(project: Path) -> int:
+    fj = project / "data" / "focused-jobs.json"
+    try:
+        values = json.loads(fj.read_text(encoding="utf-8")).get("job_ids", [])
+        return len(values) if isinstance(values, list) else 0
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+
+def strategy_score_scope(project: Path) -> tuple[int, int]:
+    """Return (current-scored focused, total focused) for strategy prep."""
+    fj = project / "data" / "focused-jobs.json"
+    try:
+        raw_ids = json.loads(fj.read_text(encoding="utf-8")).get("job_ids", [])
+    except (OSError, json.JSONDecodeError):
+        raw_ids = []
+    focused_ids = {
+        str(job_id).strip() for job_id in raw_ids if str(job_id).strip()
+    } if isinstance(raw_ids, list) else set()
+    freshness = project / "strategy" / "score-freshness.json"
+    try:
+        current_raw = json.loads(freshness.read_text(encoding="utf-8")).get(
+            "current_job_ids", []
+        )
+    except (OSError, json.JSONDecodeError):
+        current_raw = None
+    if isinstance(current_raw, list):
+        current_ids = {
+            str(job_id).strip() for job_id in current_raw if str(job_id).strip()
+        }
+    else:
+        ratings = project / "strategy" / "job-ratings.json"
+        try:
+            entries = json.loads(ratings.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            entries = []
+        current_ids = {
+            str(item.get("job_id", "")).strip() for item in entries
+            if isinstance(item, dict) and str(item.get("job_id", "")).strip()
+        }
+    return len(focused_ids & current_ids), len(focused_ids)
+
+
+def story_bank_readiness_error(project: Path) -> str:
+    """Return an actionable prep-interview prerequisite error, or ``""``.
+
+    This checks only deterministic readiness facts. The full story schema is
+    still enforced by the prep-interview validator after preflight.
+    """
+    path = project / "interviews" / "story-bank.json"
+    if not path.is_file():
+        return (
+            "story bank is missing — run `rolescout run story-bank` first, "
+            "then rerun prep-interview"
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return (
+            "story bank is unreadable or invalid JSON — run "
+            "`rolescout run story-bank` to rebuild it, then rerun prep-interview"
+        )
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return (
+            "story bank has no usable entries — run `rolescout run story-bank` "
+            "first, then rerun prep-interview"
+        )
+    return ""
+
+
 def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
     """Returns (blocking, warnings) — human-readable, with the fix in the message."""
     blocking: list[str] = []
@@ -120,6 +224,15 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
     has_materials = _has_materials(pdir)
     has_source = has_materials or has_linkedin
     where = pdir if pdir is not None else f"{project}/profile (or project.json profile_dir)"
+
+    if workflow == "search":
+        from ..project_meta import universe_status
+        universe = universe_status(project)
+        if not universe["ready"]:
+            blocking.append(
+                f"target company universe is not ready ({universe['reason']}) — "
+                "save project preferences; search starts as soon as the first named employer batch is ready"
+            )
 
     if workflow == "profile-intake":
         if not has_source:
@@ -135,7 +248,7 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
             warnings.append("evidence-map.md missing — profile-intake will rebuild it")
     else:
         if not has_prof:
-            if workflow in ("search", "score"):
+            if workflow in ("search", "score", "opportunity-plan"):
                 warnings.append(
                     f"candidate-profile.md missing in {where} — proceeding with project "
                     "targets and available LinkedIn/source hints only; grouping and scoring "
@@ -151,7 +264,7 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
                     "a truthful profile to ground decisions. Fix: add a resume/materials or "
                     "LinkedIn URL and run `rolescout run profile-intake --person <person>` first")
         elif not has_ev:
-            if workflow in ("search", "score", "apply"):
+            if workflow in ("search", "score", "opportunity-plan", "apply"):
                 warnings.append("evidence-map.md missing — claims can't be evidence-checked; "
                                 "run profile-intake to rebuild it")
             else:
@@ -183,17 +296,30 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
                 f"are STALE; run profile-intake before relying on candidate facts")
 
     if workflow in ("prep", "prep-strategy", "prep-resume", "prep-linkedin", "prep-interview"):
-        fj = project / "data" / "focused-jobs.json"
-        n_focused = 0
-        try:
-            n_focused = len(json.loads(fj.read_text(encoding="utf-8")).get("job_ids", []))
-        except (OSError, json.JSONDecodeError):
-            pass
+        n_focused = focused_job_count(project)
         if n_focused == 0:
             blocking.append(
                 f"'{workflow}' operates on FOCUSED positions only, and none are registered — "
                 "open the web UI list tab and star the positions to focus "
                 "(or POST /api/project/<code>/job-focus), then rerun")
+        elif workflow in ("prep", "prep-strategy"):
+            scored_focused, total_focused = strategy_score_scope(project)
+            if scored_focused == 0:
+                blocking.append(
+                    f"'{workflow}' strategy requires at least one FOCUSED role with a "
+                    "current score — run score (or let a partial score checkpoint publish), "
+                    "then retry"
+                )
+            elif scored_focused < total_focused:
+                warnings.append(
+                    f"strategy scope is limited to {scored_focused}/{total_focused} focused "
+                    "role(s) with current scores; unscored or stale focused roles are excluded"
+                )
+
+    if workflow == "prep-interview":
+        story_bank_error = story_bank_readiness_error(project)
+        if story_bank_error:
+            blocking.append(story_bank_error)
 
     if workflow == "prep-linkedin":
         if not has_linkedin:
@@ -203,8 +329,9 @@ def check(workflow: str, project: Path) -> tuple[list[str], list[str]]:
                 "artifacts — set the URL in the web UI profile form or with "
                 "`rolescout init --linkedin-url ...`")
 
-    jobs = _csv_rows(project / "data" / "job_list.csv")
-    if workflow == "apply" and jobs == 0:
+    from ..repositories import job_rows
+    jobs = job_rows(project)
+    if workflow == "apply" and not jobs:
         warnings.append(f"job_list is empty — '{workflow}' usually follows "
                         "`rolescout run search`; the agent will have no saved openings "
                         "to work from unless your --task names one explicitly")

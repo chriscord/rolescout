@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build the deterministic UI-visible job list view after fast search.
 
-The raw `data/job_list.csv` stays the capture store. This script writes
-`data/job_list.visible.csv` from a lightweight filter plan:
+The public opportunity SQLite repository stays the capture store. This script
+writes its `job_visibility` selection from a lightweight filter plan:
 
   deterministic search -> optional lightweight filter-plan judgment
   -> deterministic view build
@@ -15,16 +15,20 @@ seniority. It does not score role fit.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import store_io
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(ROOT))
 
 from job_url_policy import is_direct_posting_url  # noqa: E402
 from location_normalize import (  # noqa: E402
@@ -33,7 +37,7 @@ from location_normalize import (  # noqa: E402
     normalize_location_value,
 )
 from normalize_job_url import canonicalize as canonicalize_job_url  # noqa: E402
-from schema_defs import JOB_LIST_COLUMNS  # noqa: E402
+from rolescout import project_meta  # noqa: E402
 
 
 REGION_COUNTRIES = {
@@ -94,22 +98,6 @@ def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8")
-
-
-def _csv_rows(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
-def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=JOB_LIST_COLUMNS, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({key: row.get(key, "") for key in JOB_LIST_COLUMNS})
 
 
 def _canonical_country(value: str) -> str:
@@ -185,7 +173,7 @@ def _default_negative_level_terms(target_level: str) -> list[str]:
 
 
 def default_filter_plan(project: Path) -> dict[str, Any]:
-    meta = _read_json(project / "project-meta.json", {})
+    meta = project_meta.load(project)
     target_locations = [
         str(item) for item in meta.get("target_locations", [])
         if str(item).strip()
@@ -196,6 +184,8 @@ def default_filter_plan(project: Path) -> dict[str, Any]:
         "schema": "rolescout-search-view-filter-plan-v1",
         "generated_at": _now_utc(),
         "source": "deterministic_default",
+        "preference_revision": int(meta.get("preference_revision", 0) or 0),
+        "preference_fingerprint": project_meta.preference_fingerprint(meta),
         "target_level": target_level,
         "target_locations": target_locations,
         "location_filter": _target_location_filter(target_locations),
@@ -213,12 +203,26 @@ def default_filter_plan(project: Path) -> dict[str, Any]:
 
 def _sanitize_filter_plan(project: Path, plan: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     changed = False
-    meta = _read_json(project / "project-meta.json", {})
-    target_level = str(plan.get("target_level") or meta.get("target_level", ""))
+    meta = project_meta.load(project)
+    target_level = str(meta.get("target_level", ""))
     target_locations = [
-        str(item) for item in (plan.get("target_locations") or meta.get("target_locations", []))
+        str(item) for item in meta.get("target_locations", [])
         if str(item).strip()
     ]
+    if plan.get("target_level") != target_level:
+        plan["target_level"] = target_level
+        changed = True
+    if plan.get("target_locations") != target_locations:
+        plan["target_locations"] = target_locations
+        changed = True
+    revision = int(meta.get("preference_revision", 0) or 0)
+    fingerprint = project_meta.preference_fingerprint(meta)
+    if plan.get("preference_revision") != revision:
+        plan["preference_revision"] = revision
+        changed = True
+    if plan.get("preference_fingerprint") != fingerprint:
+        plan["preference_fingerprint"] = fingerprint
+        changed = True
 
     loc_filter = plan.get("location_filter", {})
     if not isinstance(loc_filter, dict):
@@ -280,7 +284,10 @@ def _sanitize_filter_plan(project: Path, plan: dict[str, Any]) -> tuple[dict[str
 def _load_or_create_plan(project: Path, plan_path: Path | None = None) -> dict[str, Any]:
     path = plan_path or project / "targets" / "search-view-filter-plan.json"
     plan = _read_json(path, {})
-    if isinstance(plan, dict) and plan.get("schema") == "rolescout-search-view-filter-plan-v1":
+    current_fingerprint = project_meta.preference_fingerprint(project)
+    if (isinstance(plan, dict)
+            and plan.get("schema") == "rolescout-search-view-filter-plan-v1"
+            and plan.get("preference_fingerprint") == current_fingerprint):
         plan, changed = _sanitize_filter_plan(project, plan)
         if changed:
             _write_json(path, plan)
@@ -418,7 +425,15 @@ def _reconcile_focused_jobs(project: Path, excluded: list[dict[str, str]]) -> No
 
 def build_view(project: Path, plan_path: Path | None = None) -> dict[str, Any]:
     plan = _load_or_create_plan(project, plan_path)
-    rows = _csv_rows(project / "data" / "job_list.csv")
+    old_project = os.environ.get("RECRUITING_PROJECT_DIR")
+    os.environ["RECRUITING_PROJECT_DIR"] = str(project)
+    try:
+        rows = store_io.read_rows("job_list")
+    finally:
+        if old_project is None:
+            os.environ.pop("RECRUITING_PROJECT_DIR", None)
+        else:
+            os.environ["RECRUITING_PROJECT_DIR"] = old_project
     kept: list[dict[str, str]] = []
     excluded: list[dict[str, str]] = []
     counts: dict[str, int] = {}
@@ -444,7 +459,15 @@ def build_view(project: Path, plan_path: Path | None = None) -> dict[str, Any]:
             _canonicalize_visible_urls(visible_row)
             kept.append(visible_row)
 
-    _write_csv(project / "data" / "job_list.visible.csv", kept)
+    old_project = os.environ.get("RECRUITING_PROJECT_DIR")
+    os.environ["RECRUITING_PROJECT_DIR"] = str(project)
+    try:
+        store_io.replace_visible_job_ids([str(row.get("job_id", "")) for row in kept])
+    finally:
+        if old_project is None:
+            os.environ.pop("RECRUITING_PROJECT_DIR", None)
+        else:
+            os.environ["RECRUITING_PROJECT_DIR"] = old_project
     summary = {
         "schema": "rolescout-search-view-summary-v1",
         "generated_at": _now_utc(),
@@ -461,7 +484,8 @@ def build_view(project: Path, plan_path: Path | None = None) -> dict[str, Any]:
         "generated_at": summary["generated_at"],
         "excluded": excluded[:5000],
     })
-    _reconcile_focused_jobs(project, excluded)
+    # Visibility is a reversible projection. Never mutate user-owned focus state
+    # merely because preferences changed or a row is temporarily hidden.
     return summary
 
 

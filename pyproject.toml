@@ -1,6 +1,5 @@
 # RoleScout — local-first AI recruiting workflow + EvalOps toolkit.
-# PyPI name is a human input: <<HUMAN_INPUT:distribution.pypi_name>> (default "rolescout",
-# see human-inputs/manifest.json). Local pipx/uv install from the repo works regardless.
+# Local pipx/uv install from the repository is supported.
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -12,12 +11,12 @@ dynamic = ["version"]
 readme = "README.md"
 description = "Local-first AI recruiting workflow product with a first-class eval/bench quality system"
 requires-python = ">=3.10"
-license = { text = "All rights reserved (placeholder — <<HUMAN_INPUT:license.choice>>)" }
+license = { text = "MIT" }
 authors = [{ name = "RoleScout maintainer" }]
 keywords = ["recruiting", "job-search", "agent", "evals", "local-first"]
 
-# Core is stdlib-only by design (environment-variance mitigation, product-spec §4).
-dependencies = []
+# PDF profile text is extracted deterministically before any model call.
+dependencies = ["pypdf>=5,<7"]
 
 [project.optional-dependencies]
 xlsx = ["openpyxl"]          # xlsx pipeline view; store works without it
@@ -27,7 +26,7 @@ render = ["pdf2image"]       # optional DOCX visual render QA; also needs OS bin
 # `python -m playwright install chromium`. The agent installs this on demand when
 # a render:js site has no browser runtime available (see self_hosted_careers).
 browser = ["playwright"]
-dev = ["ruff"]
+dev = ["pytest", "ruff"]
 
 [project.scripts]
 rolescout = "rolescout.cli:main"

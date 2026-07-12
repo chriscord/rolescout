@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import store_io  # noqa: E402
 
 REQUIRED_SCORE_SECTIONS = {
     "headline": "Headline",
@@ -17,9 +18,8 @@ REQUIRED_SCORE_SECTIONS = {
     "experienceentries": "Experience entries",
     "skills": "Skills",
     "education": "Education",
-    "activity": "Activity",
 }
-UNSCORED_SECTIONS = {"featured", "licenses", "licensescertifications"}
+UNSCORED_SECTIONS = {"activity", "featured", "licenses", "licensescertifications"}
 
 
 def _configure_stdio() -> None:
@@ -45,24 +45,22 @@ def _read(path: Path) -> str:
 
 def _focused_groups(project: Path) -> list[str]:
     focus_path = project / "data" / "focused-jobs.json"
-    csv_path = project / "data" / "job_list.csv"
     try:
         ids = json.loads(focus_path.read_text(encoding="utf-8-sig")).get("job_ids", [])
     except (OSError, json.JSONDecodeError, ValueError):
         return []
     wanted = {str(job_id) for job_id in ids if str(job_id or "").strip()}
-    if not wanted or not csv_path.exists():
+    if not wanted:
         return []
     groups: list[str] = []
     seen: set[str] = set()
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as fh:
-        for row in csv.DictReader(fh):
-            if row.get("job_id") not in wanted:
-                continue
-            slug = _slug(row.get("job_group", ""), "")
-            if slug and slug not in seen:
-                seen.add(slug)
-                groups.append(slug)
+    for row in store_io.read_project_rows(project, "job_list"):
+        if row.get("job_id") not in wanted:
+            continue
+        slug = _slug(row.get("job_group", ""), "")
+        if slug and slug not in seen:
+            seen.add(slug)
+            groups.append(slug)
     return groups
 
 
@@ -97,18 +95,56 @@ def _table_rows(text: str) -> list[tuple[str, str]]:
     return rows
 
 
-def _part2_blocks(text: str) -> dict[str, str]:
-    marker = re.search(r"^##\s+Part\s+2\b.*$", text, re.I | re.M)
-    if not marker:
-        return {}
-    tail = text[marker.end():]
+def _proposal_blocks(text: str) -> dict[str, str]:
     blocks: dict[str, str] = {}
-    matches = list(re.finditer(r"^###\s+(.+?)\s*$", tail, re.M))
+    matches = list(re.finditer(r"^###\s+(.+?)\s*$", text, re.M))
     for i, match in enumerate(matches):
         start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(tail)
-        blocks[_key(match.group(1))] = tail[start:end]
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        blocks[_key(match.group(1))] = text[start:end]
     return blocks
+
+
+def _fenced_value(block: str, label: str) -> str:
+    inline = re.search(
+        rf"```\s*{re.escape(label)}\s*\n(.*?)\n```",
+        block,
+        re.I | re.S,
+    )
+    if inline:
+        return inline.group(1).strip()
+    match = re.search(
+        rf"(?:\*\*\s*{re.escape(label)}\s*:?\s*\*\*|"
+        rf"^\s*{re.escape(label)}\s*:?\s*$)\s*\n"
+        r"```(?:text)?\s*\n(.*?)\n```",
+        block,
+        re.I | re.M | re.S,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _proposed_content_errors(section_key: str, proposed: str) -> list[str]:
+    errors: list[str] = []
+    lines = [line.strip() for line in proposed.splitlines() if line.strip()]
+    advisory = re.compile(
+        r"^(?:for\s+(?:the\s+)?(?:current\s+)?role\b|prioriti[sz]e\b|"
+        r"consider\s+adding\b|add\s+only\b|if\s+(?:available|linkedin)\b|"
+        r"keep\s+(?:the\s+.+?\s+)?as-is\b|do\s+not\b|recommend(?:ed)?\b)",
+        re.I,
+    )
+    if any(advisory.search(line) for line in lines):
+        errors.append("Proposed block contains advisory prose instead of final LinkedIn content")
+    if section_key == "experienceentries":
+        if not any(re.match(r"^[-*•‣]\s+\S", line) for line in lines):
+            errors.append("Experience Proposed block must contain copy-ready bullet lines")
+    elif section_key == "skills":
+        if len(lines) < 3:
+            errors.append("Skills Proposed block must contain at least three skill lines")
+        if any("," in line or len(line) > 80 for line in lines):
+            errors.append("Skills Proposed block must use one concise skill name per line")
+    elif section_key == "education" and len(lines) < 2:
+        errors.append("Education Proposed block must contain complete final entries")
+    return errors
 
 
 def validate_file(path: Path) -> list[str]:
@@ -119,11 +155,6 @@ def validate_file(path: Path) -> list[str]:
         return [f"{path}: cannot read: {e}"]
 
     label = str(path)
-    if not re.search(r"^##\s+Part\s+1\b", text, re.I | re.M):
-        errors.append(f"{label}: missing Part 1 heading")
-    if not re.search(r"^##\s+Part\s+2\b", text, re.I | re.M):
-        errors.append(f"{label}: missing Part 2 heading")
-
     score_rows = _table_rows(text)
     seen: dict[str, str] = {}
     for section, _score in score_rows:
@@ -145,16 +176,21 @@ def validate_file(path: Path) -> list[str]:
     if "experience x3" not in lower and "experience \u00d73" not in lower:
         errors.append(f"{label}: overall score line must show Experience x3 weighting")
 
-    blocks = _part2_blocks(text)
+    blocks = _proposal_blocks(text)
     for key, section in REQUIRED_SCORE_SECTIONS.items():
         block = blocks.get(key)
         if not block:
-            errors.append(f"{label}: Part 2 missing proposal section '{section}'")
+            errors.append(f"{label}: missing proposal section '{section}'")
             continue
-        if not re.search(r"\*\*Current:?\*\*", block, re.I):
-            errors.append(f"{label}: proposal '{section}' missing Current block")
-        if not re.search(r"\*\*(Add|Proposed|Change):?\*\*", block, re.I):
-            errors.append(f"{label}: proposal '{section}' missing Add/Proposed/Change block")
+        current = _fenced_value(block, "Current")
+        proposed = _fenced_value(block, "Proposed")
+        if not current:
+            errors.append(f"{label}: proposal '{section}' missing fenced Current block")
+        if not proposed:
+            errors.append(f"{label}: proposal '{section}' missing fenced Proposed block")
+        else:
+            for detail in _proposed_content_errors(key, proposed):
+                errors.append(f"{label}: proposal '{section}' {detail}")
 
     return errors
 

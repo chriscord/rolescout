@@ -9,6 +9,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import store_io
+
 
 REQUIRED_HEADINGS = [
     "Position summary",
@@ -45,11 +48,7 @@ def _packets(project: Path) -> list[Path]:
 
 
 def _tracker_rows(project: Path) -> list[dict]:
-    path = project / "data" / "tracker.csv"
-    if not path.exists():
-        return []
-    with path.open(newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    return store_io.read_project_rows(project, "tracker")
 
 
 def _path_text(path: Path, project: Path) -> str:
@@ -88,10 +87,18 @@ def validate_packet(path: Path, project: Path, tracker_rows: list[dict]) -> list
         errors.append(f"{rel}: Sensitive fields section must name user-manual sensitive fields")
     if not any(term in lower for term in ROUTE_TERMS):
         errors.append(f"{rel}: Application route section must identify route/vendor/login/email/referral state")
+    if not re.search(r"capture (?:completeness|boundary)|required upload", text, re.I):
+        errors.append(f"{rel}: packet must disclose route-capture completeness/boundary")
+    if not re.search(r"\b(?:do not|never|not)\b.{0,80}\bsubmit", text, re.I | re.S):
+        errors.append(f"{rel}: packet must state that RoleScout does not submit the application")
+    if not re.search(r"https?://", text):
+        errors.append(f"{rel}: packet must include the verified posting/application URL")
+    if re.search(r"https?://[^\s]*\[(?:phone|contact) redacted\]", text, re.I):
+        errors.append(f"{rel}: verified posting/application URL was corrupted by redaction")
     if re.search(r"https?://\S+/apply(?:\s|$)", text) and "guessed" in lower:
         errors.append(f"{rel}: guessed /apply URLs are not valid application route evidence")
     if not _tracker_mentions(tracker_rows, rel):
-        errors.append(f"{rel}: tracker.csv does not reference this instruction file")
+        errors.append(f"{rel}: private pipeline does not reference this instruction file")
     return errors
 
 
@@ -107,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = _tracker_rows(args.project)
     errors: list[str] = []
     if not rows:
-        errors.append("data/tracker.csv missing or empty; application packets must have tracker rows")
+        errors.append("private pipeline missing or empty; application packets must have tracker rows")
     for packet in packets:
         errors.extend(validate_packet(packet, args.project, rows))
     if errors:

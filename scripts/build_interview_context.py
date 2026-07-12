@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from jd_text_cleaner import clean_jd_text
+import store_io
 
 
 def _configure_stdio() -> None:
@@ -44,14 +45,10 @@ def _focused_ids(project: Path) -> list[str]:
 
 def _job_rows(project: Path) -> dict[str, dict]:
     rows: dict[str, dict] = {}
-    csv_path = project / "data" / "job_list.csv"
-    if not csv_path.exists():
-        return rows
-    with csv_path.open("r", encoding="utf-8", newline="") as fh:
-        for row in csv.DictReader(fh):
-            job_id = str(row.get("job_id", "") or "").strip()
-            if job_id:
-                rows[job_id] = dict(row)
+    for row in store_io.read_project_rows(project, "job_list"):
+        job_id = str(row.get("job_id", "") or "").strip()
+        if job_id:
+            rows[job_id] = dict(row)
     return rows
 
 

@@ -117,6 +117,7 @@ border-radius:999px; font-size:.76rem; font-weight:700; }
 .status-pill.removed { background:var(--red-bg); color:var(--red); border-color:#f6bcc8; }
 .status-pill.closed { background:#eceaf3; color:#656073; border-color:#d8d5e3; }
 .status-pill.unknown { background:#eef2f7; color:#526070; border-color:#d7dfea; }
+.score-stale { display:block; color:var(--red); font-size:.65rem; font-weight:600; }
 /* application statuses mirrored from the tracker (applied and beyond) */
 .status-pill.applied, .status-pill.to_interview_1, .status-pill.to_interview_2,
 .status-pill.to_interview_3,
@@ -196,6 +197,9 @@ font-family:-apple-system,sans-serif; font-size:.82rem; line-height:1.45; }
 .msg.info { color:var(--panel-muted); }
 .msg.artifact,.msg.store,.msg.validator { color:#a8c7fa; }
 .msg.approval,.msg.approval_wait { color:#bba7ff; }
+.msg.attention { color:#d6b4ff; background:rgba(126,87,194,.16); border-left:3px solid #b388ff;
+padding:.35rem .5rem; margin:.4rem 0; border-radius:0 5px 5px 0; }
+.msg.attention .chip { color:#e0c7ff; border-color:#9c6ade; }
 .msg.error { color:#e07b7b; } .msg.result,.msg.done { color:#a3be8c; }
 .msg .chip { display:inline-block; border:1px solid var(--panel-border); border-radius:4px;
 padding:0 .4em; margin-right:.45em; font-size:.62rem; text-transform:uppercase; color:var(--panel-muted); }
@@ -318,6 +322,10 @@ padding:.9rem 1rem; margin:.7rem 0; }
 .li-remove ul { margin:.25rem 0 0 1.2rem; }
 .li-remove li { margin:.15rem 0; }
 .li-why2 { margin-top:.5rem; font-size:.82rem; color:#555166; }
+.li-guidance { margin-top:.55rem; padding:.55rem .65rem; border-left:3px solid var(--accent);
+background:var(--surface-2); color:#555166; font-size:.8rem; line-height:1.45; }
+.li-guidance strong { display:block; margin-bottom:.15rem; color:var(--text); font-size:.7rem;
+text-transform:uppercase; letter-spacing:.04em; }
 .li-ev { margin-top:.4rem; color:var(--muted); font-size:.72rem; }
 .li-note { margin-top:.4rem; color:var(--muted); font-size:.78rem; font-style:italic; }
 /* linkedin-mimicking mini mock (moderately realistic) */
@@ -404,7 +412,7 @@ padding-bottom:.25rem; color:var(--text); }
     <a href="#/profile" id="nav-profile">Profile</a>
   </nav>
   <span class="badge" id="backend">…</span>
-  <span class="right">local only · your directories, your subscription</span>
+  <span class="right">local files · disclosed model processing</span>
 </header>
 <main id="view"></main>
 
@@ -412,12 +420,17 @@ padding-bottom:.25rem; color:var(--text); }
 
 <script>
 /* ---------------- state ---------------- */
-let S = {persons:[], projects:[], workflows:[], backend:'mock', active_run:null, profile_runs:{}};
+const SESSION_TOKEN = '__ROLESCOUT_SESSION_TOKEN__';
+let S = {persons:[], projects:[], workflows:[], workflow_data_use:{}, backend:'mock', active_run:null, profile_runs:{}};
 let P = null, tab = 'inbox', wfSel = 'search';
 let archMode = false, archSel = new Set();
 let currentRid = null, seen = 0, poller = null;
+let prepLiveRevision = '', prepRefreshBusy = false;
 let profilePoller = null;
-const PROJECT_WORKFLOW_HIDDEN = new Set(['profile-intake']);
+let universePoller = null, universeSeen = 0, universeProject = '';
+let profileRemoved = new Set();
+const PROJECT_WORKFLOW_HIDDEN = new Set(['profile-intake','opportunity-plan']);
+let modalLocked = false;
 let tableState = {
   list: {sort:'score', dir:'desc', filters:{location:'', group:'', priority:''}},
   tracker: {sort:'last_updated', dir:'desc', filters:{status:'', group:''}},
@@ -446,7 +459,12 @@ const esc = s => { const d=document.createElement('span'); d.textContent=s??''; 
 const attr = s => String(s??'')
   .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
   .replace(/</g,'&lt;').replace(/>/g,'&gt;');
-async function api(path, opts){ const r = await fetch(path, Object.assign({cache:'no-store'}, opts)); return r.json(); }
+async function secureFetch(path, opts={}){
+  const headers = new Headers(opts.headers || {});
+  headers.set('X-RoleScout-Token', SESSION_TOKEN);
+  return fetch(path, Object.assign({cache:'no-store'}, opts, {headers}));
+}
+async function api(path, opts){ const r = await secureFetch(path, opts); return r.json(); }
 async function post(path, obj){ return api(path,{method:'POST',
   headers:{'Content-Type':'application/json'}, body:JSON.stringify(obj)}); }
 function updateBackendBadge(){
@@ -511,6 +529,7 @@ function route(){
 function renderProjects(){
   stopPolling();
   stopProfilePolling();
+  stopUniversePolling();
   $('view').className = '';
   const act = S.projects.filter(p=>!p.archived), arch = S.projects.filter(p=>p.archived);
   const archBtnLabel = !archMode ? 'Archive' : (archSel.size ? `Archive all ${archSel.size}` : 'Cancel');
@@ -560,22 +579,28 @@ function openCreateProject(){
     <label>target level</label><input type="text" id="cp_level" placeholder="senior / staff / director">
     <label>target companies <span class="muted">(seeds — similar companies get explored too)</span></label>
     <input type="text" id="cp_companies" placeholder="OpenAI, Stripe, Airbnb">
-    <label>target comp range <span class="muted">(local only, never shared)</span></label>
+    <label>target comp range <span class="muted">(search preference; may be used by the model)</span></label>
     <input type="text" id="cp_comp" placeholder="$250-350K">
     <label>negatives <span class="muted">(exclude companies/titles/industries)</span></label>
     <input type="text" id="cp_neg" placeholder="gaming, >50% ops work">
     <div style="margin-top:1rem; display:flex; gap:.5rem">
-      <button class="primary" onclick="createProject()">Create</button>
-      <button onclick="hideModal()">Cancel</button>
+      <button class="primary" id="cp_submit" onclick="createProject()">Create</button>
+      <button id="cp_cancel" onclick="hideModal()">Cancel</button>
     </div><p class="muted" id="cp_err" style="margin-top:.5rem"></p>`);
 }
 async function createProject(){
+  const submit=$('cp_submit'), cancel=$('cp_cancel');
+  submit.disabled=true; cancel.disabled=true; modalLocked=true;
+  submit.innerHTML=`Saving project ${animatedDots()}`;
+  $('cp_err').textContent='Saving explicit targets; employer expansion will continue in background…';
   const res = await post('/api/projects', {
     person: $('cp_person').value, focus: $('cp_focus').value.trim(),
     target_locations: $('cp_loc').value, focus_role: $('cp_role').value,
     target_level: $('cp_level').value, target_companies: $('cp_companies').value,
     comp_range: $('cp_comp').value, negatives: $('cp_neg').value});
-  if (res.error){ $('cp_err').textContent = res.error; return; }
+  if (res.error){ $('cp_err').textContent = res.error; submit.disabled=false;
+    cancel.disabled=false; modalLocked=false; submit.textContent='Create'; return; }
+  modalLocked=false;
   hideModal(); await refresh(); nav('#/project/'+res.code);
 }
 
@@ -589,21 +614,25 @@ function animatedDots(cls='inline-dots'){
 function renderProfileRunStatus(){
   const p = currentPerson();
   const el = $('pf_run_status');
-  const btn = $('pf_rebuild');
-  if (!el || !btn) return;
+  const rebuild = $('pf_rebuild'), save = $('pf_save'), resync = $('pf_resync');
+  if (!el) return;
   if (!p){
-    btn.disabled = true;
-    el.textContent = 'save the person before rebuilding profile artifacts';
+    if (rebuild) rebuild.disabled = true;
+    if (resync) resync.disabled = true;
+    el.textContent = 'New profile — resume and LinkedIn can be added before the first save.';
     return;
   }
   const st = profileRunStatus(p.person);
   const running = !!st && st.status === 'running';
-  btn.disabled = running;
-  btn.innerHTML = running ? `Rebuilding profile ${animatedDots()}` : 'Rebuild profile';
+  if (save) save.disabled = running;
+  if (rebuild){ rebuild.disabled = running; rebuild.textContent = 'Rebuild artifacts'; }
+  if (resync) resync.disabled = running || !p.linkedin_url;
   if (!st){
-    el.textContent = p.has_profile ? 'candidate profile exists' : 'candidate profile not built yet';
+    el.textContent = p.profile_current ? 'Candidate profile is current.' :
+      (p.has_profile ? 'Candidate profile is stale; Save Profile to reconcile sources.' :
+        'Candidate profile has not been built yet.');
   } else if (running){
-    el.innerHTML = `profile-intake running ${animatedDots()}`;
+    el.innerHTML = `Updating profile artifacts ${animatedDots()}`;
   } else {
     el.textContent = st.summary ? `${st.status}: ${st.summary}` : `profile-intake ${st.status}`;
   }
@@ -625,89 +654,133 @@ function stopProfilePolling(){
 }
 function renderProfile(){
   stopPolling();
+  stopUniversePolling();
   startProfilePolling();
   $('view').className = '';
   const opts = S.persons.map(p=>`<option value="${p.person}">${esc(p.name||p.person)} (${p.person})</option>`).join('')
     + `<option value="__new__">+ new person…</option>`;
   $('view').innerHTML = `
     <div class="topbar"><h1>Profile</h1></div>
-    <div class="ws" style="grid-template-columns:1fr 1fr"><div>
-      <div class="card">
+    <div class="card" style="max-width:920px;margin:0 auto">
+        <p class="muted" style="margin-top:0">Commit identity, resume/materials, LinkedIn URL, and standing
+        instructions together. Profile artifacts are regenerated only when their source content changes.</p>
         <label>person</label><select id="pf_sel" onchange="fillProfile()">${opts}</select>
         <span id="pf_newwrap" style="display:none"><label>person code <span class="req">*</span>
         <span class="muted">(lowercase slug)</span></label><input type="text" id="pf_code"></span>
         <label>display name <span class="req">*</span></label><input type="text" id="pf_name">
         <label>LinkedIn URL <span class="muted">(optional)</span></label>
-        <input type="text" id="pf_li" placeholder="linkedin.com/in/you">
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <input type="text" id="pf_li" placeholder="linkedin.com/in/you" style="flex:1">
+          <button id="pf_resync" type="button" onclick="resyncLinkedIn()">Resync LinkedIn profile</button>
+        </div>
+        <p class="muted" style="margin:.3rem 0 0">A changed URL is captured on Save. If the URL is unchanged but
+        LinkedIn content changed, use Resync LinkedIn profile.</p>
+
+        <h2>Resume &amp; materials</h2>
+        <div id="pf_files" class="filelist muted">…</div>
+        <label style="margin-top:.8rem">add or replace files (pdf / docx / md / txt / html)</label>
+        <input type="file" id="pf_upload" multiple onchange="renderProfileMaterials()">
+        <p class="muted" id="pf_upmsg">Files are written only when Save Profile is pressed.</p>
+
         <label>standing instructions <span class="muted">(injected into every run — tone,
         priorities, constraints; approval boundaries always win)</span></label>
         <textarea id="pf_inst" placeholder="e.g. Prefer companies with strong AI teams. Never consider relocation. Write in concise English."></textarea>
         <div style="margin-top:.9rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
-        <button class="primary" onclick="saveProfile()">Save profile</button>
-        <button id="pf_rebuild" onclick="rebuildProfile()">Rebuild profile</button>
+        <button class="primary" id="pf_save" onclick="saveProfile()">Save Profile</button>
+        <button id="pf_rebuild" onclick="rebuildProfile()">Rebuild artifacts</button>
         <span class="muted" id="pf_msg"></span></div>
         <div id="pf_run_status" class="profile-run-status"></div>
-      </div>
-    </div><div>
-      <div class="card">
-        <h2 style="margin-top:0">Resume &amp; materials</h2>
-        <p class="muted">Files land in <code>profiles/&lt;person&gt;/</code> — the prep workflow
-        builds the candidate profile + evidence map from them.</p>
-        <div id="pf_files" class="filelist muted">…</div>
-        <label style="margin-top:.8rem">add files (pdf / docx / md / txt)</label>
-        <input type="file" id="pf_upload" multiple>
-        <button style="margin-top:.5rem" onclick="uploadResume()">Add</button>
-        <span class="muted" id="pf_upmsg"></span>
-      </div>
-    </div></div>`;
+    </div>`;
   fillProfile();
 }
 function currentPerson(){ const v=$('pf_sel').value; return v==='__new__'?null:S.persons.find(p=>p.person===v); }
 function fillProfile(){
   const p = currentPerson();
+  profileRemoved = new Set();
   $('pf_newwrap').style.display = p?'none':'inline';
   $('pf_name').value = p?(p.name||''):'';
   $('pf_li').value = p?(p.linkedin_url||''):'';
   $('pf_inst').value = p?(p.instructions||''):'';
-  $('pf_files').innerHTML = p && p.materials.length
-    ? p.materials.map(f=>`<div class="matrow"><span>${esc(f.name)}
-        <span class="muted">(${(f.size/1024).toFixed(0)} KB)</span></span>
-        <button class="mini deny" title="delete this file from the local profiles folder"
-          onclick="removeMaterial('${esc(f.name)}')">Remove</button></div>`).join('')
-    : '<span class="muted">no materials yet</span>';
+  if ($('pf_upload')) $('pf_upload').value = '';
+  renderProfileMaterials();
   renderProfileRunStatus();
 }
-async function removeMaterial(name){
+function renderProfileMaterials(){
   const p = currentPerson();
-  if (!p) return;
-  if (!confirm(`Remove ${name}?\nThe file is deleted from profiles/${p.person}/ on disk.`)) return;
-  const res = await post('/api/profile/material/delete', {person:p.person, name});
-  $('pf_upmsg').textContent = res.error ? res.error : ` removed ${name} ✓`;
-  if (!res.error){ await refresh(); fillProfile(); }
+  const existing = p && p.materials ? p.materials : [];
+  const chosen = $('pf_upload') ? Array.from($('pf_upload').files || []) : [];
+  const rows = existing.map(f=>`<div class="matrow"><span class="${profileRemoved.has(f.name)?'muted':''}">
+      ${esc(f.name)} <span class="muted">(${(f.size/1024).toFixed(0)} KB${profileRemoved.has(f.name)?' · remove on save':''})</span></span>
+      <button type="button" class="mini ${profileRemoved.has(f.name)?'':'deny'}" data-name="${attr(f.name)}"
+        onclick="toggleProfileMaterial(this.dataset.name)">${profileRemoved.has(f.name)?'Keep':'Remove'}</button></div>`);
+  rows.push(...chosen.map(f=>`<div class="matrow"><span>${esc(f.name)}
+      <span class="muted">(${(f.size/1024).toFixed(0)} KB · add on save)</span></span></div>`));
+  $('pf_files').innerHTML = rows.length ? rows.join('') : '<span class="muted">no materials selected</span>';
+}
+function toggleProfileMaterial(name){
+  if (profileRemoved.has(name)) profileRemoved.delete(name); else profileRemoved.add(name);
+  renderProfileMaterials();
+}
+async function waitForProfileIntake(person){
+  while(true){
+    await new Promise(resolve=>setTimeout(resolve,1000));
+    S=await api('/api/state');
+    const st=profileRunStatus(person);
+    renderProfileRunStatus();
+    if (!st || st.status!=='running') return st;
+  }
 }
 async function saveProfile(){
   const p = currentPerson();
   const person = p ? p.person : $('pf_code').value.trim();
-  const res = await post('/api/profile', {person, name:$('pf_name').value,
-    linkedin_url:$('pf_li').value, instructions:$('pf_inst').value});
-  if (res.error){ $('pf_msg').textContent = res.error; return; }
+  const btn=$('pf_save'); btn.disabled=true;
+  btn.innerHTML=`Updating profile ${animatedDots()}`;
+  const fd = new FormData();
+  fd.append('person', person); fd.append('name', $('pf_name').value);
+  fd.append('linkedin_url', $('pf_li').value); fd.append('instructions', $('pf_inst').value);
+  fd.append('remove_materials', JSON.stringify([...profileRemoved]));
+  for (const f of Array.from($('pf_upload').files || [])) fd.append('file-'+f.name, f, f.name);
+  let res;
+  try {
+    const response = await secureFetch('/api/profile/save', {method:'POST', body:fd});
+    res = await response.json();
+  } catch (e) { res = {error:String(e)}; }
+  if (res.error){ $('pf_msg').textContent = res.error; btn.disabled=false;
+    btn.textContent='Save Profile'; return; }
+  S=await api('/api/state');
+  const intakeActive = !!profileRunStatus(person) && profileRunStatus(person).status==='running';
+  const waitedForIntake = res.profile_intake_started || intakeActive;
+  let finalStatus = profileRunStatus(person);
+  if (waitedForIntake){
+    $('pf_msg').innerHTML=`updating profile ${animatedDots()}`;
+    finalStatus = await waitForProfileIntake(person);
+  }
   await refresh(); $('pf_sel').value = person; fillProfile();
-  $('pf_msg').textContent = res.profile_intake_started ? ' saved; profile build started' : ' saved';
+  const fresh=$('pf_save'); if(fresh){ fresh.disabled=false; fresh.textContent='Save Profile'; }
+  $('pf_msg').textContent = waitedForIntake
+    ? (finalStatus && finalStatus.status==='done'
+      ? ' profile updated'
+      : `${(finalStatus&&finalStatus.status)||'failed'}: ${(finalStatus&&finalStatus.summary)||'profile artifacts were not built'}`)
+    : (res.skipped_duplicate_files && res.skipped_duplicate_files.length
+      ? ` saved; duplicate file content skipped (${res.skipped_duplicate_files.join(', ')})`
+      : ' saved; no source changes, so no model call was needed');
 }
-async function uploadResume(){
+async function resyncLinkedIn(){
   const p = currentPerson();
-  if (!p){ $('pf_upmsg').textContent = 'save the person first'; return; }
-  const files = $('pf_upload').files;
-  if (!files.length){ $('pf_upmsg').textContent='choose files'; return; }
-  const fd = new FormData(); fd.append('person', p.person);
-  for (const f of files) fd.append('file-'+f.name, f, f.name);
-  const r = await fetch('/api/profile/resume', {method:'POST', body:fd, cache:'no-store'});
-  const res = await r.json();
-  if (res.error){ $('pf_upmsg').textContent = res.error; return; }
-  await refresh(); $('pf_sel').value = p.person; fillProfile();
-  const started = res.files.some(f=>f.profile_intake_started);
-  $('pf_upmsg').textContent = ` uploaded ${res.files.length} file(s)` +
-    (started ? '; profile build started' : '');
+  if (!p){ $('pf_msg').textContent='Save Profile before resyncing LinkedIn.'; return; }
+  if (($('pf_li').value||'').trim() !== (p.linkedin_url||'')){
+    $('pf_msg').textContent='The LinkedIn URL has unsaved changes. Save Profile first.'; return;
+  }
+  const btn=$('pf_resync'); btn.disabled=true; btn.innerHTML=`Resyncing ${animatedDots()}`;
+  const res=await post('/api/profile/linkedin/resync',{person:p.person});
+  if (res.error){ $('pf_msg').textContent=res.error; btn.disabled=false;
+    btn.textContent='Resync LinkedIn profile'; return; }
+  $('pf_msg').innerHTML=`capturing LinkedIn and reconciling profile ${animatedDots()}`;
+  const finalStatus=await waitForProfileIntake(p.person);
+  await refresh(); $('pf_sel').value=p.person; fillProfile();
+  $('pf_msg').textContent = finalStatus && finalStatus.status==='done'
+    ? (finalStatus.summary || 'LinkedIn profile resynced.')
+    : `${(finalStatus&&finalStatus.status)||'failed'}: ${(finalStatus&&finalStatus.summary)||'LinkedIn resync failed'}`;
 }
 async function rebuildProfile(){
   const p = currentPerson();
@@ -722,12 +795,51 @@ async function rebuildProfile(){
 
 /* ---------------- workspace ---------------- */
 async function openProject(code){
+  if (universeProject && universeProject !== code) stopUniversePolling();
   if (!P || P.code !== code) prepState.cache = {};   // fresh artifacts per project entry
   P = await api('/api/project/'+code);
   if (P.error){ $('view').innerHTML = `<p class="muted">${esc(P.error)}</p>`; return; }
   renderWorkspace();
   await loadChatHistory();
   if (P.active_run) attach(P.active_run, false);
+  startUniversePolling();
+}
+function universeBadgeMarkup(){
+  const state=P?.universe_status||{};
+  const run=P?.universe_run||{};
+  if (run.status==='running'){
+    return {cls:'badge mock', html:`Building search universe ${animatedDots()}`};
+  }
+  if (!state.ready){
+    const prefix=['failed','blocked','partial'].includes(run.status)
+      ? 'Search universe blocked' : 'Search universe';
+    return {cls:'badge mock', html:`${esc(prefix+': '+(state.reason||'not ready'))}`};
+  }
+  if (state.state==='expanding'){
+    return {cls:'badge', html:'Search targets ready · expanding employer coverage'};
+  }
+  return {cls:'badge', html:'Search universe ready'};
+}
+function updateUniverseChrome(){
+  const badge=$('universeBadge');
+  if (badge){ const value=universeBadgeMarkup(); badge.className=value.cls; badge.innerHTML=value.html; }
+  setRunButton();
+}
+function prepBadgeMarkup(){
+  const progress=P?.prep_progress||{};
+  const phase=String(progress.current_phase||'').replace('-', ' ');
+  const state=String(progress.state||'');
+  if (!phase) return {show:false, cls:'badge mock', html:''};
+  const live=state==='running';
+  const failed=['failed','partial','blocked'].includes(state);
+  return {show:true, cls:failed?'badge mock':'badge',
+    html:`Prep · ${esc(phase)} · ${esc(live?'running':state||'ready')}${live?' '+animatedDots():''}`};
+}
+function updatePrepChrome(){
+  const badge=$('prepStatusBadge'); if(!badge)return;
+  const value=prepBadgeMarkup();
+  badge.style.display=value.show?'inline-flex':'none';
+  badge.className=value.cls; badge.innerHTML=value.html;
 }
 function renderWorkspace(){
   stopProfilePolling();
@@ -738,6 +850,8 @@ function renderWorkspace(){
       <section class="project-main">
         <div class="project-toolbar">
           <h1>${esc(P.focus)} <span class="muted" style="font-size:.8rem">${esc(P.code)}</span></h1>
+          <span id="universeBadge" class="${universeBadgeMarkup().cls}">${universeBadgeMarkup().html}</span>
+          <span id="prepStatusBadge" style="display:none"></span>
           <span class="spacer"></span>
           <button class="pref" onclick="openTargets()">Preference</button>
         </div>
@@ -757,6 +871,7 @@ function renderWorkspace(){
             <button class="send" id="sendbtn" onclick="startRun()">Run ▸</button>
           </div>
           <div class="muted" id="runlist" style="margin-top:.4rem; font-size:.7rem"></div>
+          <div class="muted" id="datause" style="margin-top:.35rem; font-size:.68rem"></div>
         </div>
       </div>
     </div>`;
@@ -776,18 +891,30 @@ function renderWorkspace(){
     wf.appendChild(b);
   }
   renderRunList();
+  renderDataUse();
+  updatePrepChrome();
   renderTab();
 }
 function selectWorkflow(w){
   wfSel=w;
   document.querySelectorAll('#wfchips button').forEach(b=>b.className = b.textContent===wfSel?'sel':'');
+  renderDataUse();
+  setRunButton();
+}
+function renderDataUse(){
+  const el=$('datause'); if(el) el.textContent='Data used: '+(S.workflow_data_use?.[wfSel]||'public facts only');
 }
 function renderRunList(){
   setRunButton();
   if (!$('runlist') || !P) return;
-  $('runlist').innerHTML = P.runs.length
+  const recent = P.runs.length
     ? 'recent: '+P.runs.map(r=>`<a href="#" onclick="attach('${r.rid}', false);return false">${r.workflow}·${r.status}</a>`).join(' | ')
     : '';
+  const cp = P.score_checkpoint || {};
+  const checkpoint = cp.checkpoint_key
+    ? `score checkpoint: ${cp.validated_jobs||0}/${cp.total_jobs||0} validated${cp.invalid_jobs?`, ${cp.invalid_jobs} invalid`:''} · ${esc(cp.status||'')}`
+    : '';
+  $('runlist').innerHTML = [recent,checkpoint].filter(Boolean).join('<br>');
 }
 function activeRid(){
   return currentRid || (P && P.active_run) || null;
@@ -805,7 +932,14 @@ function setRunButton(){
     btn.textContent = 'Run ▸';
     btn.title = '';
     btn.className = 'send';
-    btn.disabled = !!S.active_run;       // another project's run holds the single slot
+    const universeBuilding = P?.universe_run?.status === 'running';
+    const universeBlocked = wfSel==='search' && P?.universe_status && !P.universe_status.ready;
+    btn.disabled = !!S.active_run || universeBuilding || universeBlocked;
+    if (universeBuilding){
+      btn.title = 'Building the target-employer universe; Run unlocks automatically when ready.';
+    } else if (universeBlocked){
+      btn.title = P.universe_status.reason;
+    }
     btn.onclick = startRun;
   }
 }
@@ -906,7 +1040,7 @@ function trackerStatusSelect(r){
 }
 function priorityRank(v){ return ({high:3, medium:2, low:1})[v||''] || 0; }
 function rowValue(r, key){
-  if (key === 'score') return r.score === '' ? -1 : Number(r.score);
+  if (key === 'priority_score') return r.priority_score === '' ? -1 : Number(r.priority_score);
   if (key === 'fit_score') return r.fit_score === '' ? -1 : Number(r.fit_score);
   if (key === 'priority') return priorityRank(r.priority);
   const v = r[key] ?? '';
@@ -916,7 +1050,7 @@ function rowValue(r, key){
 function sortTable(type, key){
   const st = tableState[type];
   if (st.sort === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
-  else { st.sort = key; st.dir = key === 'score' || key === 'last_updated' ? 'desc' : 'asc'; }
+  else { st.sort = key; st.dir = key === 'priority_score' || key === 'last_updated' ? 'desc' : 'asc'; }
   renderTab();
 }
 function setFilter(type, key, value){
@@ -1025,11 +1159,11 @@ function renderTab(){
         onclick="toggleFocus('${esc(r.job_id)}', ${r.focused?'false':'true'})">${r.focused?'★':'☆'}</button></td>
       <td>${esc(r.company)}</td><td>${jobLink(r)}</td><td>${statusPill(r.status)}</td>
       <td>${esc(r.group)}</td><td>${esc(r.location)}</td>
-      <td class="score">${r.score!==''?esc(r.score):'—'}</td>
-      <td class="score">${r.fit_score!==''?esc(r.fit_score):'—'}</td>
+      <td class="score">${r.priority_score!==''?esc(r.priority_score):'—'}${r.score_freshness==='stale'?'<span class="score-stale">stale</span>':''}</td>
+      <td class="score">${r.fit_score!==''?esc(r.fit_score):'—'}${r.score_freshness==='stale'?'<span class="score-stale">stale</span>':''}</td>
       <td>${esc(r.priority)}</td>
       <td class="muted">${esc(r.score_note)}</td></tr>`).join('');
-    el.innerHTML = `<p class="muted">score = weighted 0–100 priority score
+    el.innerHTML = `<p class="muted">priority_score = weighted 0–100 pursuit score
       (strategy/job-scores.json); fit 1–5 is the coarse research-stage estimate and is
       superseded once scoring runs. Once a position is applied, its tracker status
       replaces the posting status here.</p>` +
@@ -1040,8 +1174,8 @@ function renderTab(){
         {key:'focused', label:'★'},
         {key:'company', label:'company'}, {key:'title', label:'title'},
         {key:'status', label:'status'}, {key:'group', label:'group'},
-        {key:'location', label:'location'}, {key:'score', label:'score'},
-        {key:'fit_score', label:'fit'}, {key:'priority', label:'priority'},
+        {key:'location', label:'location'}, {key:'priority_score', label:'priority_score'},
+        {key:'fit_score', label:'fit_score'}, {key:'priority', label:'priority'},
         {key:'score_note', label:'why'}
       ], rows) : '<p class="muted">no rows match the filters</p>');
   } else if (tab==='tracker'){
@@ -1072,14 +1206,14 @@ async function renderStrategy(el){
   const prioRows = s.priorities.map(p=>`<tr>
     <td>${esc(p.company)}</td>
     <td>${p.url?`<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>`:esc(p.title)}</td>
-    <td class="score">${esc(p.score)}</td><td>${esc(p.priority||p.suggested_priority)}</td>
+    <td class="score">${esc(p.priority_score)}</td><td>${esc(p.priority||p.suggested_priority)}</td>
     <td class="muted">${esc(p.note)}</td></tr>`).join('');
   el.innerHTML = `<div class="article">
     <span class="kicker">strategy report · composed from run artifacts</span>
     <h1>${esc(P.focus)} — search strategy</h1>
     ${s.exec_summary_md ? `<h2>Executive summary</h2><div class="lede">${mdToHtml(s.exec_summary_md)}</div>` : ''}
     ${s.priorities.length ? `<h2>Priorities &amp; why</h2>
-      <table><tr><th>company</th><th>role</th><th>score</th><th>priority</th><th>why</th></tr>${prioRows}</table>` : ''}
+      <table><tr><th>company</th><th>role</th><th>priority_score</th><th>priority</th><th>why</th></tr>${prioRows}</table>` : ''}
     ${s.overrides.length ? `<h3>Overrides (human calls vs script suggestions)</h3><ul>` +
       s.overrides.map(o=>`<li><strong>${esc(o.job_id||'')}</strong>: ${esc(o.reason||JSON.stringify(o))}</li>`).join('')+'</ul>' : ''}
     ${s.priorities_md && s.exec_summary_md !== s.priorities_md ?
@@ -1088,8 +1222,14 @@ async function renderStrategy(el){
     ${s.companies.map(c=>`<h2>How to apply — ${esc(c.company)}</h2>${mdToHtml(c.content)}`).join('')}
   </div>`;
 }
-function prepItems(kind){
-  return P.prep.filter(a=>a.kind===kind);
+function prepItems(kind, includeStale=false){
+  return (P.prep||[]).filter(a=>a.kind===kind && (includeStale || (a.state||'current')==='current'));
+}
+function prepStageItems(kind){
+  const workflow = kind==='resume' ? 'prep-resume' : kind==='linkedin' ? 'prep-linkedin' :
+    kind==='interview' ? 'prep-interview' : 'prep-strategy';
+  return (P.prep_staging||[]).filter(a=>a.workflow===workflow ||
+    (kind==='interview' && a.workflow==='story-bank'));
 }
 function prepKindCounts(){
   return {
@@ -1108,12 +1248,24 @@ function renderPrepShell(el){
     ['interview packets', prepItems('interview').length],
   ];
   const counts = prepKindCounts();
+  const failedStages = (P.prep_staging||[]).filter(a=>
+    ['validation_failed','publish_failed'].includes(a.state));
+  const staleCount = (P.prep||[]).filter(a=>(a.state||'current')==='stale').length;
   const order = ['strategy','resume','linkedin','interview'];
+  const progress=P.prep_progress||{};
+  const phaseRows=Object.entries(progress.phases||{}).map(([name,value])=>
+    `<span class="${value.state==='published'?'ok':value.state==='running'?'':'no'}">`+
+    `${value.state==='published'?'✓':value.state==='running'?'⟳':'•'} ${esc(name.replace('-', ' '))}`+
+    `${value.completed!==undefined&&value.total!==undefined?' '+esc(value.completed+'/'+value.total):''}</span>`).join('');
   if (!counts[prepState.kind]) prepState.kind = order.find(k=>counts[k]) || 'strategy';
   const tabButton = (kind,label) => `<button class="${prepState.kind===kind?'on':''}"
     onclick="selectPrepView('${kind}')">${label} <span class="muted">${counts[kind]}</span></button>`;
   el.innerHTML = `
     <div class="ready">${ready.map(([l,ok])=>`<span class="${ok?'ok':'no'}">${ok?'✓':'✗'} ${l}</span>`).join('')}</div>
+    ${phaseRows?`<div class="ready"><strong class="muted">Current prep run</strong>${phaseRows}</div>`:''}
+    ${failedStages.length ? `<p class="notice err"><strong>${failedStages.length} generated group(s) not published.</strong> `+
+      `The generated files were retained in this run's staging area; select the affected tab for details.</p>` : ''}
+    ${staleCount ? `<p class="muted">${staleCount} previous-group artifact(s) are stale and hidden from the default view.</p>` : ''}
     <div class="prep-view-tabs">
       ${tabButton('strategy','Strategy')}${tabButton('resume','Resume')}${tabButton('linkedin','LinkedIn')}${tabButton('interview','Interview')}
     </div>
@@ -1146,8 +1298,11 @@ function renderPrepPanel(){
   }
   panel.className = 'prep-detail' + (kind==='resume' ? ' wide' : '');
   const items = prepItems(kind);
+  const staging = prepStageItems(kind).filter(a=>
+    ['validation_failed','publish_failed'].includes(a.state));
   if (!items.length){
-    panel.innerHTML = '<p class="muted">no artifacts yet — run <em>prep</em>, ' +
+    panel.innerHTML = (staging.length ? renderPrepStaging(staging) : '') +
+      '<p class="muted">no current published artifacts yet — run <em>prep</em>, ' +
       '<em>prep-linkedin</em> or <em>prep-interview</em> from the agent session panel</p>';
     return;
   }
@@ -1156,12 +1311,22 @@ function renderPrepPanel(){
   if (!items.some(a=>a.path===selectedPath)) selectedPath = active.path;
   prepState.selected[kind] = active.path;
   const pickerClass = kind === 'interview' ? 'interview-picker' : 'prep-artifact-tabs';
-  panel.innerHTML = `<div class="${pickerClass}">` + items.map(a=>
+  panel.innerHTML = (staging.length ? renderPrepStaging(staging) : '') +
+    `<div class="${pickerClass}">` + items.map(a=>
     `<button type="button" class="${a.path===active.path?'on':''}" data-kind="${attr(kind)}" data-path="${attr(a.path)}"
       onclick="selectPrepArtifactFromButton(this)">
       ${esc(artifactLabel(a))}</button>`).join('') + `</div>
     <div id="prepArtifact"><p class="muted">loading…</p></div>`;
   loadPrepArtifact(active);
+}
+function renderPrepStaging(items){
+  return `<div class="article"><h3>Generated but not published</h3>` + items.map(item=>{
+    const preview = item.path ? `<a class="source-link" href="#" data-path="${attr(item.path)}"
+      onclick="previewFile(this.dataset.path);return false">inspect staged output</a>` : '';
+    return `<p><strong>${esc(item.label)}</strong> · ${esc(item.state)} · `+
+      `<code>${esc(item.error_code||'publish-gate')}</code><br>`+
+      `<span class="muted">${esc(item.error_detail||'Validation did not pass.')}</span> ${preview}</p>`;
+  }).join('') + `</div>`;
 }
 async function loadPrepArtifact(item){
   const mount = $('prepArtifact');
@@ -1299,8 +1464,7 @@ function parseLinkedInChanges(md){
   return changes;
 }
 function renderLinkedInArtifact(md){
-  // linkedin-review.md contract: Part 1 scorecard + Part 2 add/remove/change per
-  // LinkedIn section → compact score summary + before/after LinkedIn-style mocks.
+  // linkedin-review.md contract: semantic scorecard + add/remove/change sections.
   const review = parseLinkedInReview(md);
   return review ? renderLinkedInReview(review) : renderLinkedInPacket(md);
 }
@@ -1319,7 +1483,7 @@ function renderLinkedInPacket(md){  // legacy fallback (update-packet.md, free-f
     </div>`).join('')}</div>`;
 }
 
-/* ---- linkedin review parsing (Part 1 scorecard / Part 2 proposals) ---- */
+/* ---- linkedin review parsing (scorecard / proposals; wrapper headings optional) ---- */
 function splitPipeRow(line){            // backtick-aware: pipes inside `code` stay in the cell
   const s = line.trim().replace(/^\|/,'').replace(/\|$/,'');
   const cells = []; let cur = '', tick = false;
@@ -1345,7 +1509,7 @@ function parseScorecard(part1){
     if (/^\s*\|/.test(l)){
       if (/^\s*\|[\s\-:|]+\|\s*$/.test(l)) continue;                 // separator row
       const c = splitPipeRow(l);
-      if (c.length >= 2 && !/^section$/i.test(c[0]))
+      if (c.length >= 2 && /\d+(?:\.\d+)?\s*\/\s*5/.test(c[1]) && !/^section$/i.test(c[0]))
         rows.push({section:c[0], score:c[1], good:c[2]||'', improve:c[3]||'', missing:c[4]||''});
       continue;
     }
@@ -1363,28 +1527,38 @@ function parseProposals(part2){
     if (!/^###\s+/.test(b)) continue;
     const lines = b.split('\n');
     const sec = {name: lines[0].replace(/^###\s+/,'').trim(),
-                 evidence:'', addText:'', currentText:'', notes:[], remove:[], change:[]};
+                 evidence:'', proposedText:'', currentText:'', notes:[], remove:[], change:[],
+                 addGuidance:[], changeGuidance:[], guidance:[]};
     let mode = '', inFence = false, fence = [];
     for (const l of lines.slice(1)){
-      if (/^\s*```/.test(l)){
+      const fenceMatch = l.match(/^\s*```\s*(Current|Add|Proposed|Remove|Change|Guidance|text)?\s*$/i);
+      if (fenceMatch){
         if (inFence){
           const blk = fence.join('\n').trim();
           if (mode === 'current') sec.currentText += (sec.currentText ? '\n\n' : '') + blk;
-          else sec.addText += (sec.addText ? '\n\n' : '') + blk;
+          else if (mode === 'proposed') sec.proposedText += (sec.proposedText ? '\n\n' : '') + blk;
+          else if (mode === 'add') sec.addGuidance.push(blk);
+          else if (mode === 'change') sec.changeGuidance.push(blk);
+          else if (mode === 'guidance') sec.guidance.push(blk);
+          else if (mode === 'remove' && blk) sec.remove.push(blk);
           fence = [];
+        } else if (fenceMatch[1] && fenceMatch[1].toLowerCase() !== 'text'){
+          mode = fenceMatch[1].toLowerCase();
         }
         inFence = !inFence;
         continue;
       }
       if (inFence){ fence.push(l); continue; }
-      const mm = l.match(/^\*\*\s*(Current|Add|Proposed|Remove|Change)\b/i);
-      if (mm){ const k = mm[1].toLowerCase(); mode = (k === 'proposed' ? 'add' : k); continue; }
+      const mm = l.match(/^\s*(?:\*\*\s*)?(Current|Add|Proposed|Remove|Change|Guidance)\s*:?\s*(?:\*\*)?\s*$/i);
+      if (mm){ mode = mm[1].toLowerCase(); continue; }
       if (mode === 'current'){
         if (l.trim()) sec.currentText += (sec.currentText ? '\n' : '') + l.trim();
-      } else if (mode === 'add'){
+      } else if (mode === 'proposed'){
         const em = l.match(/^Evidence[^:]*:\s*(.+)$/i);
         if (em){ sec.evidence = em[1].replace(/\.$/,''); continue; }
         if (l.trim()) sec.notes.push(l.trim());
+      } else if (mode === 'add'){
+        if (l.trim()) sec.addGuidance.push(l.trim());
       } else if (mode === 'remove'){
         const rm = l.match(/^\s*[-*]\s+(.+)$/);
         if (rm) sec.remove.push(rm[1]);
@@ -1393,7 +1567,9 @@ function parseProposals(part2){
           const c = splitPipeRow(l);
           if (c.length >= 2 && !/^current/i.test(c[0]))
             sec.change.push({current:c[0], proposed:c[1], why:c[2]||''});
-        }
+        } else if (l.trim()) sec.changeGuidance.push(l.trim());
+      } else if (mode === 'guidance'){
+        if (l.trim()) sec.guidance.push(l.trim());
       }
     }
     out.push(sec);
@@ -1401,11 +1577,10 @@ function parseProposals(part2){
   return out;
 }
 function parseLinkedInReview(md){
-  if (!/^##\s+Part\s*1\b/mi.test(md) || !/^##\s+Part\s*2\b/mi.test(md)) return null;
   const title = (md.match(/^#\s+(.+)$/m)||[])[1] || 'LinkedIn Review';
   const meta = [...md.matchAll(/^>\s?(.+)$/gm)].map(m=>m[1]);
-  const scorecard = parseScorecard(mdSectionByRe(md, /^##\s+Part\s*1\b/i));
-  const proposals = parseProposals(mdSectionByRe(md, /^##\s+Part\s*2\b/i));
+  const scorecard = parseScorecard(md);
+  const proposals = parseProposals(md);
   if (!scorecard.rows.length && !proposals.length) return null;
   return {title, meta, scorecard, proposals};
 }
@@ -1563,10 +1738,10 @@ function scoreClass(n){
   if (isNaN(n)) return 'li-mid';
   return n >= 3.5 ? 'li-good' : n >= 2.5 ? 'li-mid' : 'li-bad';
 }
-/* scoring model: License & Featured are NOT score items; Experience carries
+/* scoring model: Activity, License & Featured are NOT score items; Experience carries
    3x the weight of every other section in the overall (client-side recompute
    keeps legacy review files consistent with the current model). */
-const LI_UNSCORED = /licen|featured/i;
+const LI_UNSCORED = /activity|licen|featured/i;
 const LI_EXP_WEIGHT = 3;
 function liWeightedOverall(rows, stated){
   let num = 0, den = 0;
@@ -1599,7 +1774,10 @@ function renderLinkedInReview(r){
       || sec.change.map(c=>c.current).filter(Boolean).join('\n\n')
       || (sec.change[0]||{}).current || '';
     const cur = stripTicks(curSrc);
-    const proposed = sec.addText || stripTicks((sec.change[0]||{}).proposed || '');
+    // Only an explicit **Proposed** copy block belongs inside the LinkedIn mock.
+    // Add/Change content is advisory and is rendered below, never as a role,
+    // skill tag, or education entry.
+    const proposed = sec.proposedText;
     const whys = sec.change.map(c=>c.why).filter(Boolean);
     return `<div class="li-section-card" id="${secId(i)}">
       <div class="li-sec-head"><span class="li-sec-name">${esc(sec.name)}</span>
@@ -1611,6 +1789,9 @@ function renderLinkedInReview(r){
       </div>
       ${sec.remove.length?`<div class="li-remove"><b>Remove / avoid</b><ul>${sec.remove.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
       ${whys.length?`<div class="li-why2"><strong>Why:</strong> ${esc(whys.join(' '))}</div>`:''}
+      ${sec.changeGuidance.length?`<div class="li-guidance"><strong>Change guidance</strong>${esc(sec.changeGuidance.join(' '))}</div>`:''}
+      ${sec.addGuidance.length?`<div class="li-guidance"><strong>Add guidance</strong>${esc(sec.addGuidance.join(' '))}</div>`:''}
+      ${sec.guidance.length?`<div class="li-guidance"><strong>Guidance</strong>${esc(sec.guidance.join(' '))}</div>`:''}
       ${sec.notes.length?`<div class="li-note">${esc(sec.notes.join(' '))}</div>`:''}
       ${sec.evidence?`<div class="li-ev">Evidence: ${esc(sec.evidence)}</div>`:''}
     </div>`;
@@ -1621,11 +1802,11 @@ function renderLinkedInReview(r){
         <div><div class="li-sum-title">${esc(r.title)}</div>
           ${r.meta.length?`<div class="li-sum-meta">${esc(r.meta[0])}</div>`:''}</div>
         <div class="li-overall ${scoreClass(overallN)}"
-          title="weighted average — Experience ×${LI_EXP_WEIGHT}, License/Featured excluded">
+          title="weighted average — Experience ×${LI_EXP_WEIGHT}, Activity/License/Featured excluded">
           <span>${isNaN(overallN)?esc(sc.overall||'—'):overallN+'/5'}</span><small>overall</small></div>
       </div>
       <div class="li-chiprow">${chips}</div>
-      <div class="li-sum-meta">scoring: Experience ×${LI_EXP_WEIGHT} weight · License &amp; Featured not scored</div>
+      <div class="li-sum-meta">scoring: Experience ×${LI_EXP_WEIGHT} weight · Activity, License &amp; Featured not scored</div>
       ${sc.fixes.length?`<div class="li-fixes"><b>Highest-leverage fixes</b><ol>${sc.fixes.map(f=>`<li>${esc(f)}</li>`).join('')}</ol></div>`:''}
     </div>
     ${cards}
@@ -1740,7 +1921,9 @@ function openTargets(){
   const m = P.meta;
   showModal(`
     <h1>Project targets</h1>
-    <p class="muted">Updatable mid-session — the next run picks these up.</p>
+    <p class="muted">Named employers become searchable as soon as you save. Broader
+      seeds and close-peer expansion continue in the background; completed additions are
+      merged only if this preference revision is still current.</p>
     <label>target locations <span class="req">*</span></label>
     <input type="text" id="tg_loc" value="${esc(m.target_locations.join(', '))}">
     <label>focus role</label><input type="text" id="tg_role" value="${esc(m.focus_role)}">
@@ -1749,16 +1932,22 @@ function openTargets(){
     <label>comp range</label><input type="text" id="tg_pay" value="${esc(m.comp_range)}">
     <label>negatives</label><input type="text" id="tg_neg" value="${esc(m.negatives.join(', '))}">
     <div style="margin-top:1rem; display:flex; gap:.5rem">
-      <button class="primary" onclick="saveTargets()">Save</button>
-      <button onclick="hideModal()">Cancel</button></div>
+      <button class="primary" id="tg_submit" onclick="saveTargets()">Save</button>
+      <button id="tg_cancel" onclick="hideModal()">Cancel</button></div>
     <p class="muted" id="tg_err"></p>`);
 }
 async function saveTargets(){
+  const submit=$('tg_submit'), cancel=$('tg_cancel');
+  submit.disabled=true; cancel.disabled=true; modalLocked=true;
+  submit.innerHTML=`Saving preferences ${animatedDots()}`;
+  $('tg_err').textContent='Explicit targets will be searchable immediately; expansion continues in background…';
   const res = await post(`/api/project/${P.code}/meta`, {
     target_locations: $('tg_loc').value, focus_role: $('tg_role').value,
     target_level: $('tg_level').value, target_companies: $('tg_comp').value,
     comp_range: $('tg_pay').value, negatives: $('tg_neg').value});
-  if (res.error){ $('tg_err').textContent = res.error; return; }
+  if (res.error){ $('tg_err').textContent = res.error; submit.disabled=false;
+    cancel.disabled=false; modalLocked=false; submit.textContent='Save'; return; }
+  modalLocked=false;
   hideModal(); openProject(P.code);
 }
 
@@ -1846,17 +2035,72 @@ async function loadChatHistory(){
 }
 function addMsg(kind, ts, text){
   const log=$('log'); if(!log) return;
-  const activity = $('runActivity');
-  if (activity) activity.remove();
+  const activities = [$('universeActivity'), $('runActivity')].filter(Boolean);
   const d=document.createElement('div'); d.className = kind === 'user' ? 'msg user' : 'msg '+kind;
   const chip = {stream:'agent', info:'sys', artifact:'file', store:'db', validator:'check',
     approval:'gate', approval_wait:'gate', result:'done', done:'done',
-    user:'you', error:'err'}[kind]||kind;
+    user:'you', error:'err', attention:'action', prep_progress:'prep'}[kind]||kind;
   const stamp = ts || deviceTs();
   d.innerHTML=`<span class="ts">${esc(stamp)}</span>`+`<span class="chip">${chip}</span>`+esc(text);
-  log.appendChild(d);
-  if (activity) log.appendChild(activity);
+  const anchor=activities.find(activity=>activity.parentNode===log);
+  if(anchor) log.insertBefore(d,anchor); else log.appendChild(d);
   log.scrollTop=log.scrollHeight;
+}
+function showUniverseActivity(text='building search universe'){
+  const log=$('log'); if(!log) return;
+  let d=$('universeActivity');
+  if (!d){
+    d=document.createElement('div'); d.id='universeActivity';
+    d.className='msg info activity-indicator';
+  }
+  if(d.dataset.activityText!==text){
+    d.dataset.activityText=text;
+    d.innerHTML=`<span class="ts">${esc(deviceTs())}</span><span class="chip">universe</span>`+
+      esc(text)+`<span class="typing-dots"><span></span><span></span><span></span></span>`;
+  }
+  if (d.parentNode !== log) log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+}
+function clearUniverseActivity(){ const d=$('universeActivity'); if(d)d.remove(); }
+function stopUniversePolling(){
+  if(universePoller){ clearInterval(universePoller); universePoller=null; }
+  universeSeen=0; universeProject=''; clearUniverseActivity();
+}
+function startUniversePolling(){
+  if(!P) return;
+  if(universePoller) clearInterval(universePoller);
+  universeProject=P.code; universeSeen=0;
+  updateUniverseChrome();
+  if(P.universe_run?.status==='running'){
+    showUniverseActivity('building target-employer universe');
+    universePoller=setInterval(pollUniverse,1000);
+    pollUniverse();
+  } else if(P.universe_run?.started && P.universe_status?.ready){
+    addMsg('result',deviceTs(),'Search universe ready — Search is enabled.');
+  } else if(P.universe_run?.started && ['failed','blocked','partial'].includes(P.universe_run.status)){
+    addMsg('attention',deviceTs(),`Universe update ${P.universe_run.status}: `+
+      `${P.universe_run.summary||P.universe_status?.reason||'see the run log'}`);
+  }
+}
+async function pollUniverse(){
+  if(!P || !universeProject || P.code!==universeProject) return;
+  const view=await api(`/api/project/${P.code}/universe-run?since=${universeSeen}`);
+  if(view.error) return;
+  for(const event of (view.events||[])) addMsg(event.kind||'info',event.ts||deviceTs(),event.text||'');
+  universeSeen=view.n_events||universeSeen;
+  P.universe_run={status:view.status,summary:view.summary,started:view.started};
+  updateUniverseChrome();
+  if(view.status==='running'){
+    showUniverseActivity('building target-employer universe');
+    return;
+  }
+  clearUniverseActivity();
+  if(universePoller){ clearInterval(universePoller); universePoller=null; }
+  const next=await api('/api/project/'+P.code);
+  if(next.error) return;
+  P=next;
+  updateUniverseChrome();
+  renderRunList();
 }
 function showRunActivity(text='running'){
   const log=$('log'); if(!log) return;
@@ -1866,8 +2110,11 @@ function showRunActivity(text='running'){
     d.id='runActivity';
     d.className='msg info activity-indicator';
   }
-  d.innerHTML=`<span class="ts">${esc(deviceTs())}</span><span class="chip">run</span>`+
-    esc(text)+`<span class="typing-dots"><span></span><span></span><span></span></span>`;
+  if(d.dataset.activityText!==text){
+    d.dataset.activityText=text;
+    d.innerHTML=`<span class="ts">${esc(deviceTs())}</span><span class="chip">run</span>`+
+      esc(text)+`<span class="typing-dots"><span></span><span></span><span></span></span>`;
+  }
   if (d.parentNode !== log) log.appendChild(d);
   log.scrollTop=log.scrollHeight;
 }
@@ -1897,10 +2144,10 @@ async function poll(){
   if (!currentRid || !$('log')) return;
   const v = await api(`/api/runs/${currentRid}?since=${seen}`);
   if (v.error) return;
-  clearRunActivity();
   for (const e of v.events) addMsg(e.kind, e.ts, e.text);
   seen = v.n_events;
   renderApproval(v);
+  if (v.workflow==='prep') await refreshPrepState();
   if (v.status!=='running'){
     if($('adot'))$('adot').className='dot';
     stopPolling();
@@ -1908,6 +2155,26 @@ async function poll(){
   } else {
     showRunActivity(v.pending ? 'waiting for approval' : 'running');
   }
+}
+async function refreshPrepState(force=false){
+  if (!P || prepRefreshBusy) return;
+  prepRefreshBusy=true;
+  try {
+    const next=await api(`/api/project/${P.code}/prep-state`);
+    if(next.error || (!force && next.revision===prepLiveRevision)) return;
+    prepLiveRevision=next.revision||'';
+    P.strategy_files=next.strategy_files||[];
+    P.prep=next.prep||[];
+    P.prep_staging=next.prep_staging||[];
+    P.prep_progress=next.prep_progress||{};
+    prepState.cache={};
+    updatePrepChrome();
+    if(tab==='prep' && $('tabBody')){
+      const scroll=$('tabBody').scrollTop;
+      renderPrep($('tabBody'));
+      $('tabBody').scrollTop=scroll;
+    }
+  } finally { prepRefreshBusy=false; }
 }
 function renderApproval(v){
   const dock = $('approvalDock');
@@ -1928,7 +2195,11 @@ async function refreshProjectData(){
   const next = await api('/api/project/'+code);
   if (next.error) return;
   P = next;
+  prepLiveRevision='';
   prepState.cache = {};   // a run may have rewritten artifacts — drop cached contents
+  prepState.selected = {}; // group assignments may have changed; choose newest active artifact
+  updateUniverseChrome();
+  updatePrepChrome();
   renderRunList();
   renderTab();
 }
@@ -1944,8 +2215,22 @@ function showModal(html, cls=''){
   modal.innerHTML = html;
   $('modalBg').style.display='flex';
 }
-function hideModal(){ $('modalBg').style.display='none'; }
+function hideModal(){ if(!modalLocked) $('modalBg').style.display='none'; }
 $('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
+
+async function waitForRun(rid, onStatus){
+  while(true){
+    const run=await api(`/api/runs/${rid}?since=0`);
+    if (run.error) return {ok:false,message:run.error};
+    if (run.status!=='running'){
+      const ok=run.status==='done';
+      return {ok,message:ok?'Search universe ready':
+        `Universe update ${run.status}: ${run.summary||'see agent log'}`};
+    }
+    if(onStatus) onStatus(`Updating target employer universe ${animatedDots()}`);
+    await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+}
 
 refresh();
 setInterval(()=>{ if (!currentRid && (location.hash||'#/projects')==='#/projects') refresh(); }, 8000);

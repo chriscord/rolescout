@@ -43,10 +43,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--level", help="target level, e.g. senior / staff / director")
     p.add_argument("--companies", help="target company seeds, comma-separated "
                                        "(the agent also explores similar companies)")
-    p.add_argument("--comp-range", help="target comp range (sensitive; local only)")
+    p.add_argument("--comp-range", help="target compensation preference (may be used by model workflows)")
     p.add_argument("--negatives", help="excludes, comma-separated (companies/titles/industries)")
 
     sub.add_parser("doctor", help="environment & install health check")
+
+    p = sub.add_parser("privacy", help="inspect local privacy/retention state")
+    p.add_argument("action", choices=["audit"])
+    p.add_argument("--project", help="limit audit to one project code")
+
+    p = sub.add_parser("clean", help="remove disposable runtime data (dry-run by default)")
+    p.add_argument("--runtime", action="store_true", required=True)
+    p.add_argument("--project", help="limit cleanup to one project code")
+    p.add_argument("--older-than-days", type=int, default=30)
+    p.add_argument("--apply", action="store_true", help="perform deletions shown in manifest")
+
+    p = sub.add_parser("delete-person", help="delete a profile and its projects (dry-run by default)")
+    p.add_argument("--person", required=True)
+    p.add_argument("--apply", action="store_true", help="perform deletions shown in manifest")
+
+    p = sub.add_parser("export", help="create a sensitivity-separated CSV/XLSX export")
+    p.add_argument("--project", help="project code (default: active project)")
+    scope = p.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--public", action="store_true", help="public opportunities only")
+    scope.add_argument("--private", action="store_true", help="private pipeline only")
+    p.add_argument("--xlsx", action="store_true")
 
     p = sub.add_parser("run", help="run a workflow headlessly")
     p.add_argument("workflow", choices=["profile-intake", "search", "score", "prep",
@@ -103,6 +124,39 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "doctor":
             from . import doctor
             return doctor.main(args)
+        if args.cmd in {"privacy", "clean", "delete-person"}:
+            from .paths import repo_root
+            from .privacy import retention
+            project = None
+            code = getattr(args, "project", None)
+            if code:
+                project = repo_root() / "projects" / code
+                if not (project / "project.json").exists():
+                    raise RoleScoutError(f"project not found: {code}")
+            if args.cmd == "privacy":
+                retention.print_manifest(retention.privacy_audit(project))
+            elif args.cmd == "clean":
+                retention.print_manifest(retention.clean_runtime(
+                    project, apply=args.apply, older_than_days=args.older_than_days))
+            else:
+                retention.print_manifest(retention.delete_person(args.person, apply=args.apply))
+            return 0
+        if args.cmd == "export":
+            from . import core
+            from .paths import active_project_dir, repo_root
+            project = (repo_root() / "projects" / args.project
+                       if args.project else active_project_dir())
+            if project is None or not (project / "project.json").exists():
+                raise RoleScoutError("project not found; pass --project or activate one")
+            env = {**os.environ, "RECRUITING_PROJECT_DIR": str(project)}
+            flags = ["--public" if args.public else "--private"]
+            if args.xlsx:
+                flags.append("--xlsx")
+            result = core.run_script("export_store", *flags, env=env)
+            print(result.stdout, end="")
+            if result.returncode:
+                print(result.stderr, file=sys.stderr, end="")
+            return result.returncode
         if args.cmd == "run":
             from .runner import workflows
             return workflows.main(args)

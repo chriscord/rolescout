@@ -65,6 +65,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("resume_md")
     ap.add_argument("--reasons", help="JSON file mapping bullets to reason codes + evidence refs")
+    ap.add_argument("--max-bullets", type=int, default=16,
+                    help="maximum experience bullets for a one-page resume")
+    ap.add_argument("--max-bullet-words", type=int, default=360,
+                    help="maximum total words across experience bullets")
     args = ap.parse_args()
 
     md = Path(args.resume_md).read_text(encoding="utf-8")
@@ -87,8 +91,8 @@ def main() -> int:
         if len(b) > 250:
             errors.append(f"bullet {i}: {len(b)} chars (max 250): \"{b[:60]}...\"")
         n_words = len(b.split())
-        if not 20 <= n_words <= 27:
-            warnings.append(f"bullet {i}: {n_words} words (target 20-27): \"{b[:60]}...\"")
+        if not 16 <= n_words <= 27:
+            warnings.append(f"bullet {i}: {n_words} words (target 16-27): \"{b[:60]}...\"")
         if args.reasons:
             match = next((r for r in reasons if b.startswith(r.get("bullet_prefix", "\x00"))), None)
             if match is None:
@@ -105,13 +109,29 @@ def main() -> int:
         if narrative_count > 2:
             errors.append(f"{narrative_count} 'narrative' bullets (max 2)")
 
-    for w in warnings:
-        print(f"  WARN: {w}")
+    if len(bullets) > args.max_bullets:
+        errors.append(
+            f"{len(bullets)} experience bullets (one-page budget max {args.max_bullets}); "
+            "remove lower-priority bullets instead of shrinking the document"
+        )
+    total_words = sum(len(bullet.split()) for bullet in bullets)
+    if total_words > args.max_bullet_words:
+        errors.append(
+            f"{total_words} experience-bullet words "
+            f"(one-page budget max {args.max_bullet_words})"
+        )
+
     if errors:
         print(f"FAIL: {len(errors)} issue(s) across {len(bullets)} bullet(s)")
         for e in errors:
             print(f"  - {e}")
+        if warnings:
+            print(f"WARNINGS: {len(warnings)} non-blocking length item(s)")
+            for w in warnings:
+                print(f"  WARN: {w}")
         return 1
+    for w in warnings:
+        print(f"  WARN: {w}")
     print(f"PASS: {len(bullets)} bullet(s) valid"
           + (f" ({len(warnings)} length warning(s))" if warnings else ""))
     return 0

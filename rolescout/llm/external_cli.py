@@ -9,9 +9,9 @@ Configure with:
     ROLESCOUT_PROVIDER=cli
     ROLESCOUT_LLM_CMD='your-agent-cli run --model {model} --effort {effort} {prompt}'
 
-If the command template does not contain a `{prompt}` token, the prompt is sent
-to stdin. `{root}`, `{project}`, `{model}`, and `{effort}` are also replaced
-when present.
+The prompt is sent to stdin; argv prompt expansion is rejected by default.
+`{root}` and `{project}` resolve to a disposable staging directory. Arbitrary
+CLIs are developer-only because RoleScout cannot verify their tool sandbox.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from ..paths import RoleScoutError, repo_root
-from . import model_profiles
-from . import prompts
+from ..paths import RoleScoutError
+from . import model_profiles, prompts
+from .runtime import provider_environment, staged_working_directory
 
 TIMEOUT_S = int(os.environ.get("ROLESCOUT_CLI_TIMEOUT_S", "1800"))
 
@@ -58,15 +58,22 @@ def binary() -> str | None:
 
 
 def _build_command(prompt: str, project: Path | None = None,
+                   working_dir: Path | None = None,
                    workflow: str | None = None) -> tuple[list[str], str | None, dict[str, str]]:
-    root = repo_root()
-    project_text = str(project or "")
+    root = working_dir or Path.cwd()
+    project_text = str(working_dir or "")
     profile = model_profiles.external_cli_profile_for(workflow)
     effort = profile.get("effort", "")
     cmd: list[str] = []
     prompt_in_argv = False
     for arg in _split_template():
         if "{prompt}" in arg:
+            if os.environ.get("ROLESCOUT_ALLOW_PROMPT_ARGV") != "1":
+                raise RoleScoutError(
+                    "{prompt} in ROLESCOUT_LLM_CMD exposes private packet text in the "
+                    "process list. Remove it to send the prompt through stdin, or set "
+                    "ROLESCOUT_ALLOW_PROMPT_ARGV=1 for reviewed developer-only use."
+                )
             prompt_in_argv = True
             arg = arg.replace("{prompt}", prompt)
         arg = (arg.replace("{root}", str(root))
@@ -92,6 +99,12 @@ class ExternalCliProvider:
     name = "cli"
 
     def __init__(self) -> None:
+        if os.environ.get("ROLESCOUT_ENABLE_UNSANDBOXED_CLI") != "1":
+            raise RoleScoutError(
+                "external CLI providers are developer-only because RoleScout cannot "
+                "verify their filesystem/tool sandbox. Set "
+                "ROLESCOUT_ENABLE_UNSANDBOXED_CLI=1 only after reviewing that provider."
+            )
         exe = binary()
         if not exe:
             raise RoleScoutError(
@@ -108,13 +121,14 @@ class ExternalCliProvider:
                 "auth": "external-cli-managed"}
 
     def complete(self, prompt: str) -> str:
-        cmd, stdin_prompt, profile = _build_command(prompt, workflow="complete")
-        env = {**os.environ, "ROLESCOUT_TASK_MODEL": profile["model"],
-               "ROLESCOUT_TASK_EFFORT": profile.get("effort", ""),
-               "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        r = subprocess.run(cmd, input=stdin_prompt, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=TIMEOUT_S,
-                           cwd=repo_root(), env=env)
+        with staged_working_directory("complete") as stage:
+            cmd, stdin_prompt, profile = _build_command(
+                prompt, working_dir=stage, workflow="complete")
+            env = provider_environment({"ROLESCOUT_TASK_MODEL": profile["model"],
+                                        "ROLESCOUT_TASK_EFFORT": profile.get("effort", "")})
+            r = subprocess.run(cmd, input=stdin_prompt, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=TIMEOUT_S,
+                               cwd=stage, env=env)
         if r.returncode != 0:
             raise RoleScoutError(f"{_cli_name()} failed (rc={r.returncode}): "
                                  f"{(r.stderr or r.stdout).strip()[:400]}")
@@ -122,19 +136,20 @@ class ExternalCliProvider:
 
     def run(self, workflow: str, context: dict, on_progress=None,
             model_workflow: str | None = None) -> dict:
-        prompt = prompts.workflow_prompt(workflow, context)
+        prompt, audit = prompts.workflow_prompt_with_audit(workflow, context)
         project = Path(context["project"])
         profile_key = model_workflow or workflow
-        cmd, stdin_prompt, profile = _build_command(prompt, project=project, workflow=profile_key)
-        env = {**os.environ, "RECRUITING_PROJECT_DIR": str(project),
-               "ROLESCOUT_TASK_MODEL": profile["model"],
-               "ROLESCOUT_TASK_EFFORT": profile.get("effort", ""),
-               "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        stage_cm = staged_working_directory(workflow)
+        stage = stage_cm.__enter__()
+        cmd, stdin_prompt, profile = _build_command(
+            prompt, project=project, working_dir=stage, workflow=profile_key)
+        env = provider_environment({"ROLESCOUT_TASK_MODEL": profile["model"],
+                                    "ROLESCOUT_TASK_EFFORT": profile.get("effort", "")})
 
         t0 = time.monotonic()
         proc = subprocess.Popen(
             cmd,
-            cwd=repo_root(),
+            cwd=stage,
             stdin=subprocess.PIPE if stdin_prompt is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -169,6 +184,7 @@ class ExternalCliProvider:
                 pass
             if proc.poll() is None:
                 proc.kill()
+            stage_cm.__exit__(None, None, None)
 
         if proc.returncode != 0:
             tail = "\n".join(raw_lines[-12:])
@@ -194,5 +210,8 @@ class ExternalCliProvider:
                 "streamed": True,
                 "usage": {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0,
                           "num_turns": 0,
+                          "input_bytes": audit.input_bytes,
+                          "prompt_fingerprint": audit.fingerprint,
+                          "data_classes": list(audit.data_classes),
                           "note": "usage is managed by the external CLI"},
                 "events": events}

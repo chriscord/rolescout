@@ -23,19 +23,14 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+import store_io
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except AttributeError:
     pass
-
-
-def load_csv(p):
-    if not p.exists():
-        return None
-    with open(p, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
 
 
 def _log_runs(raw):
@@ -98,12 +93,17 @@ def main() -> int:
     def add(sev, layer, check, detail):
         findings.append((sev, layer, check, detail))
 
-    raw_job_list_path = proj / "data" / "job_list.csv"
-    visible_job_list_path = proj / "data" / "job_list.visible.csv"
-    schema_job_list_path = visible_job_list_path if visible_job_list_path.exists() else raw_job_list_path
-    jl_raw = load_csv(raw_job_list_path) or []
-    jl = load_csv(schema_job_list_path) or []
-    tr = load_csv(proj / "data" / "tracker.csv") or []
+    jl_raw = store_io.read_project_rows(proj, "job_list")
+    old_project = os.environ.get("RECRUITING_PROJECT_DIR")
+    os.environ["RECRUITING_PROJECT_DIR"] = str(proj)
+    try:
+        jl = store_io.read_visible_job_rows()
+    finally:
+        if old_project is None:
+            os.environ.pop("RECRUITING_PROJECT_DIR", None)
+        else:
+            os.environ["RECRUITING_PROJECT_DIR"] = old_project
+    tr = store_io.read_project_rows(proj, "tracker")
 
     # ---- Layer 1: invariants ----
     if jl:
@@ -115,7 +115,7 @@ def main() -> int:
                            encoding="utf-8", errors="replace",
                            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         if r.returncode == 0:
-            label = "visible job_list" if schema_job_list_path == visible_job_list_path else "job_list"
+            label = "visible job_list" if len(jl) != len(jl_raw) else "job_list"
             ok.append(("L1", "job_list schema", f"{len(jl)} {label} rows validator-clean"))
         else:
             add("P0", "L1", "job_list schema", r.stdout.strip()[:500])
@@ -132,11 +132,17 @@ def main() -> int:
         _trf = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
                                            encoding="utf-8")
         json.dump(tr, _trf); _trf.close()
+        _jobs = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False,
+                                            encoding="utf-8", newline="")
+        writer = csv.DictWriter(_jobs, fieldnames=store_io.COLS["job_list"])
+        writer.writeheader(); writer.writerows(jl_raw); _jobs.close()
         r = subprocess.run([sys.executable, str(ROOT / "scripts" / "validate_tracker_rows.py"),
-                            _trf.name, "--job-list", str(proj / "data" / "job_list.csv")],
+                            _trf.name, "--job-list", _jobs.name],
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        Path(_trf.name).unlink(missing_ok=True)
+        Path(_jobs.name).unlink(missing_ok=True)
         if r.returncode == 0:
             ok.append(("L1", "tracker schema+linkage", f"{len(tr)} rows clean"))
         else:
@@ -288,7 +294,7 @@ def main() -> int:
     print(f"\n=== grade_run: {proj.name} ({date.today().isoformat()}) ===")
     print(f"run_state: {run_state}")
     row_label = f"visible_job_list={len(jl)}, raw_job_list={len(jl_raw)}"
-    if schema_job_list_path == raw_job_list_path:
+    if len(jl) == len(jl_raw):
         row_label = f"job_list={len(jl)}"
     print(f"rows: {row_label}, tracker={len(tr)} | PASS checks: {len(ok)} | findings: "
           f"{len(p0)} P0, {sum(1 for f in findings if f[0]=='P1')} P1, "

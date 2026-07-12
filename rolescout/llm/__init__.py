@@ -14,11 +14,11 @@ Selection (ROLESCOUT_PROVIDER overrides; otherwise automatic):
   `codex` binary on PATH          -> codex
   otherwise                       -> mock
 
-An *envelope* is the provider-neutral output contract of a workflow run:
+An *envelope* is the provider-neutral transport for typed model output:
   {workflow, model_config: {...}, usage: {...}, events: [...]}
-Event types: progress, artifact, store_write, external_action (with on_approve/
-on_deny event lists), result. The runner executes events through the prototype's
-validate-before-write pipeline; providers only produce them.
+Public live providers may return progress and one typed result. Direct artifact,
+store-write, and external-action events are rejected; the runner validates and
+materializes the typed payload.
 """
 
 from __future__ import annotations

@@ -8,11 +8,12 @@ Install: `npm install -g @openai/codex` (or `brew install codex`), then
 `codex login`. Select this provider with `ROLESCOUT_PROVIDER=codex` (it is also
 the automatic default when `codex` is on PATH).
 
-Execution: `codex exec` (non-interactive) inside the repo with
-RECRUITING_PROJECT_DIR pinned — the agent reads skills, runs the validators, and
-writes through the same pipeline every backend uses. General flags are
-overridable via CODEX_EXEC_ARGS because CLI versions differ; model and reasoning
-effort are pinned by RoleScout workflow profiles.
+Execution: `codex exec` (non-interactive) inside a disposable neutral staging
+directory. Shell/unified-exec/apps/multi-agent/history are disabled, the sandbox
+is read-only, and only a minimized content packet is sent. Public web search is
+enabled only for the prep stages whose contract explicitly requires it. The
+runner validates typed output and owns all writes. Model and reasoning effort
+remain pinned by RoleScout workflow profiles.
 
 Honesty note: subscription usage exposes no dollar cost; cost_usd is recorded as
 0.0 with the model config marking auth=chatgpt-subscription, and token counts
@@ -29,16 +30,28 @@ import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
-from ..paths import RoleScoutError, repo_root
-from . import model_profiles
-from . import prompts
+from ..paths import RoleScoutError
+from . import model_profiles, prompts
+from .runtime import provider_environment, staged_working_directory
 
-DEFAULT_EXEC_ARGS = ["--sandbox", "workspace-write", "--json"]
+DEFAULT_EXEC_ARGS = [
+    "--sandbox", "read-only", "--json", "--skip-git-repo-check", "--ephemeral",
+]
 TIMEOUT_S = int(os.environ.get("CODEX_TIMEOUT_S", "1800"))
 PINNED_CONFIG_KEYS = {"model", "model_reasoning_effort"}
 ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"]
 ISOLATION_VALUE_FLAGS = {"--profile", "-p"}
+CONTENT_ONLY_CONFIG = [
+    "-c", "features.shell_tool=false",
+    "-c", "features.unified_exec=false",
+    "-c", "features.apps=false",
+    "-c", "features.multi_agent=false",
+    "-c", 'history.persistence="none"',
+    "-c", 'shell_environment_policy.inherit="none"',
+]
+WEB_RESEARCH_WORKFLOWS = frozenset({"prep-strategy", "prep-interview"})
 
 
 def binary() -> str | None:
@@ -134,31 +147,36 @@ class CodexProvider:
         return out
 
     def _exec_command(self, workflow: str | None = None,
-                      sandbox_write: bool = True,
+                      cwd: str | None = None,
                       profile: dict | None = None) -> list[str]:
         args = os.environ.get("CODEX_EXEC_ARGS")
         extra = shlex.split(args) if args else list(DEFAULT_EXEC_ARGS)
         extra = self._strip_pinned_model_args(extra)
         extra += ISOLATION_FLAGS
-        if not sandbox_write:
-            extra = ["read-only" if a == "workspace-write" else a for a in extra]
+        extra += CONTENT_ONLY_CONFIG
+        if workflow in WEB_RESEARCH_WORKFLOWS:
+            extra += ["-c", 'web_search="live"']
+        else:
+            extra += ["-c", 'web_search="disabled"']
+        # Public model stages are always read-only. Ignore an inherited request
+        # for workspace-write so the runner remains the only writer.
+        extra = ["read-only" if a == "workspace-write" else a for a in extra]
         profile_args = (model_profiles.codex_cli_args_for_profile(profile)
                         if profile is not None
                         else model_profiles.codex_cli_args(workflow)[1])
         extra += profile_args
         # Prompt is passed on stdin. Passing the full RoleScout prompt as argv
         # exceeds Windows' command-line limit on real search runs.
-        return [self.exe, "exec", "--cd", str(repo_root()), *extra, "-"]
+        return [self.exe, "exec", "--cd", str(cwd or Path.cwd()), *extra, "-"]
 
-    def _exec(self, prompt: str, workflow: str | None = None,
-              sandbox_write: bool = True) -> tuple[str, list[dict]]:
+    def _exec(self, prompt: str, workflow: str | None = None) -> tuple[str, list[dict]]:
         """Run codex exec; returns (raw_stdout, parsed_jsonl_events_if_any)."""
-        cmd = self._exec_command(workflow=workflow, sandbox_write=sandbox_write)
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           input=prompt,
-                           encoding="utf-8", errors="replace", timeout=TIMEOUT_S,
-                           env={**os.environ, "PYTHONUTF8": "1",
-                                "PYTHONIOENCODING": "utf-8"})
+        with staged_working_directory(workflow or "complete") as stage:
+            cmd = self._exec_command(workflow=workflow, cwd=str(stage))
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               input=prompt,
+                               encoding="utf-8", errors="replace", timeout=TIMEOUT_S,
+                               env=provider_environment())
         if r.returncode != 0:
             detail = (r.stderr or r.stdout).strip() or "no output"
             raise RoleScoutError(f"codex exec failed (rc={r.returncode}): "
@@ -190,7 +208,7 @@ class CodexProvider:
 
     def complete(self, prompt: str) -> str:
         """Single completion (bench B0/B1, judging) — read-only sandbox."""
-        raw, events = self._exec(prompt, workflow="complete", sandbox_write=False)
+        raw, events = self._exec(prompt, workflow="complete")
         texts = self._texts_from_jsonl(events)
         return texts[-1] if texts else raw
 
@@ -207,13 +225,13 @@ class CodexProvider:
         """Streaming execution: every codex output line reaches `on_progress` the
         moment it appears (the CLI/web UI show live activity instead of a blinking
         cursor); the envelope is assembled from the same stream at the end."""
-        prompt = prompts.workflow_prompt(workflow, context)
+        prompt, audit = prompts.workflow_prompt_with_audit(workflow, context)
         profile_key = model_workflow or workflow
         profiles = model_profiles.codex_profile_variants(profile_key)
         last_error: RoleScoutError | None = None
         for idx, profile in enumerate(profiles):
             try:
-                return self._run_once(workflow, context, prompt, profile, on_progress)
+                return self._run_once(workflow, prompt, profile, audit, on_progress)
             except RoleScoutError as e:
                 last_error = e
                 if idx >= len(profiles) - 1 or not self._retryable_model_error(str(e)):
@@ -227,13 +245,12 @@ class CodexProvider:
                     )
         raise last_error or RoleScoutError("codex exec failed before starting")
 
-    def _run_once(self, workflow: str, context: dict, prompt: str,
-                  profile: dict, on_progress=None) -> dict:
-        cmd = self._exec_command(workflow=workflow, profile=profile)
-        # PYTHONUTF8/PYTHONIOENCODING force UTF-8 in the agent's Python subprocesses so
-        # writing non-ASCII (e.g. "•") doesn't crash on Windows cp949/cp1252 consoles.
-        env = {**os.environ, "RECRUITING_PROJECT_DIR": str(context["project"]),
-               "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    def _run_once(self, workflow: str, prompt: str, profile: dict,
+                  audit, on_progress=None) -> dict:
+        stage_cm = staged_working_directory(workflow)
+        stage = stage_cm.__enter__()
+        cmd = self._exec_command(workflow=workflow, cwd=str(stage), profile=profile)
+        env = provider_environment()
 
         t0 = time.monotonic()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -300,6 +317,7 @@ class CodexProvider:
                 pass
             if proc.poll() is None:
                 proc.kill()
+            stage_cm.__exit__(None, None, None)
         if proc.returncode != 0:
             detail = "\n".join(raw_lines[-12:]) or "no output"
             raise RoleScoutError(f"codex exec failed (rc={proc.returncode}): "
@@ -328,5 +346,8 @@ class CodexProvider:
                 "streamed": True,  # progress already shown live; don't re-print
                 "usage": {"cost_usd": 0.0, "tokens_in": tokens_in,
                           "tokens_out": tokens_out, "num_turns": 0,
+                          "input_bytes": audit.input_bytes,
+                          "prompt_fingerprint": audit.fingerprint,
+                          "data_classes": list(audit.data_classes),
                           "note": "chatgpt-subscription: no per-run dollar cost exposed"},
                 "events": events}
