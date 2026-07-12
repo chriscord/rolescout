@@ -31,6 +31,10 @@ def package_bytes(skill_dir: Path) -> bytes:
                              (f"{name}/.source.json", manifest)):
             info = zipfile.ZipInfo(member, FIXED_TIME)
             info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.create_version = 20
+            info.extract_version = 20
+            info.flag_bits = 0
             info.external_attr = 0o100644 << 16
             archive.writestr(info, data)
     return output.getvalue()
