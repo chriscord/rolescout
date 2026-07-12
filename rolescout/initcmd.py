@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 
 from . import core, profile_meta, project_meta
 from .paths import RoleScoutError, repo_root
@@ -44,23 +45,41 @@ def _save_person_meta(person: str, args) -> None:
         print(f"profile meta saved -> {p.relative_to(repo_root())}")
 
 
-def _save_project_meta(person: str, focus: str, args) -> None:
+def _save_project_meta(person: str, focus: str, args) -> Path | None:
     proj = repo_root() / "projects" / f"{person}--{focus}"
     if not (proj / "project.json").exists():
-        return
+        return None
     fields = {"target_locations": getattr(args, "locations", None),
               "focus_role": getattr(args, "role", None),
               "target_level": getattr(args, "level", None),
               "target_companies": getattr(args, "companies", None),
               "comp_range": getattr(args, "comp_range", None),
               "negatives": getattr(args, "negatives", None)}
+    changed = False
     if any(v is not None for v in fields.values()):
+        before = project_meta.preference_fingerprint(proj)
         project_meta.update(proj, **fields)
+        changed = project_meta.preference_fingerprint(proj) != before
         print(f"project targets saved -> projects/{person}--{focus}/project-meta.json")
     meta = project_meta.load(proj)
     if not meta["target_locations"]:
         print("WARN: no target locations declared — searches will be ungrounded; "
               "set with `rolescout init --person … --focus … --locations 'Seoul, Remote-KR'`")
+    return proj if changed or not project_meta.universe_status(proj)["ready"] else None
+
+
+def _build_universe(project: Path | None) -> int:
+    if project is None:
+        return 0
+    from .runner import workflows
+    print("building target employer universe from current project preferences...")
+    rec = workflows.run_workflow("opportunity-plan", project=project)
+    status = str(rec.get("status", "failed"))
+    if status != "ok" or not project_meta.universe_status(project)["ready"]:
+        print(f"FAIL: target employer universe update ended {status}", file=sys.stderr)
+        return 1
+    print("target employer universe ready")
+    return 0
 
 
 def main(args) -> int:
@@ -73,7 +92,9 @@ def main(args) -> int:
         rc = _passthrough("--person", args.person, "--focus", args.focus)
         if rc == 0:
             _save_person_meta(args.person, args)
-            _save_project_meta(args.person, args.focus, args)
+            project = _save_project_meta(args.person, args.focus, args)
+            if _build_universe(project) != 0:
+                return 1
         return rc
     if args.person:  # profile-meta-only update (no project touched)
         _save_person_meta(args.person, args)
@@ -127,7 +148,7 @@ def main(args) -> int:
     level = input("  target level (optional, e.g. senior/staff/director): ").strip()
     companies = input("  target companies (optional seeds, comma-separated — similar "
                       "companies get explored too): ").strip()
-    comp = input("  target comp range (optional; stays local, never shared): ").strip()
+    comp = input("  target comp range (optional search preference; model-allowed): ").strip()
     negatives = input("  excludes (optional, comma-separated companies/titles/industries): ").strip()
 
     print(f"\nAbout to create/activate projects/{person}--{focus}"
@@ -150,7 +171,9 @@ def main(args) -> int:
     a.locations, a.role, a.level = locations, role, level
     a.companies, a.comp_range, a.negatives = companies, comp, negatives
     _save_person_meta(person, a)
-    _save_project_meta(person, focus, a)
+    project = _save_project_meta(person, focus, a)
+    if _build_universe(project) != 0:
+        return 1
     print(f"\nNext: put your resume in profiles/{person}/ then "
           "`rolescout run prep` (profile intake) → `rolescout run search` — "
           "or do it all from `rolescout web`.")

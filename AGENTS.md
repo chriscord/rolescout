@@ -10,7 +10,7 @@ This repo supports multiple people (`profiles/<person>/`, shared profile + evide
 
 1. **Truthfulness**: never invent credentials, employers, dates, achievements, metrics, immigration status, references, or compensation facts. Evidence-map IDs (`profiles/<person>/evidence-map.md`) back every material claim.
 2. **Local-only execution**: public RoleScout drafts and writes local artifacts only. Do not submit applications, send messages, save LinkedIn edits, upload files, schedule events, accept terms, or share sensitive data.
-3. **Store discipline**: each project's `job_list` and `tracker` live in `<project>/data/recruiting.db` (source of truth) with generated CSV mirrors and an xlsx pipeline view; an optional read-only sheet copy is referenced in the project's `project.json`. Schema and write rules: `references/recruiting-sheet-schema.md`. Validate with `scripts/`, upsert via `scripts/upsert_rows.py` (verifies read-after-write, regenerates views).
+3. **Store discipline**: public `job_list` facts live in `<project>/data/public-opportunities.db`; private `tracker`/contact/status facts live in `<project>/private/pipeline.db`. SQLite is operational truth. CSV/XLSX are explicit, sensitivity-separated exports (`rolescout export --public|--private`), never internal read models or combined by default. Schema/write rules: `references/recruiting-sheet-schema.md`. Upsert via `scripts/upsert_rows.py` (validates and verifies full field equality).
 4. **Currency**: verify current company/role/posting facts with browser research before relying on them; label unverified claims.
 5. **Privacy**: resume, LinkedIn, compensation, visa status, contacts, and statuses are sensitive. Keep them in project artifacts.
 

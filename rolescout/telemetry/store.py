@@ -2,7 +2,9 @@
 
 v1 (M1): runs table — run id, workflow, mode, model config, cost, latency,
 validator results, approval decisions, failure class.
-v2 (M5): adds events + corrections tables and the redaction ledger.
+v2: adds legacy events/corrections/share-ledger tables.
+v3: adds prompt size/fingerprint/data-class metrics.
+v4: purges legacy content-bearing telemetry; new writes are metrics-only.
 
 Same journal_mode=MEMORY mitigation as the project store (synced folders).
 """
@@ -17,7 +19,7 @@ from pathlib import Path
 
 from ..paths import telemetry_db_path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 _DDL_V1 = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -66,7 +68,20 @@ CREATE TABLE IF NOT EXISTS shares (
 );
 """
 
-MIGRATIONS: dict[int, str] = {1: _DDL_V1, 2: _DDL_V2}
+_DDL_V3 = """
+ALTER TABLE runs ADD COLUMN input_bytes INTEGER DEFAULT 0;
+ALTER TABLE runs ADD COLUMN prompt_fingerprint TEXT DEFAULT '';
+ALTER TABLE runs ADD COLUMN data_classes TEXT DEFAULT '[]';
+"""
+
+_DDL_V4 = """
+UPDATE runs SET project='', summary='', validator_results='[]', approvals='[]';
+DELETE FROM events;
+DELETE FROM corrections;
+DELETE FROM shares;
+"""
+
+MIGRATIONS: dict[int, str] = {1: _DDL_V1, 2: _DDL_V2, 3: _DDL_V3, 4: _DDL_V4}
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
@@ -96,26 +111,37 @@ def new_run_id() -> str:
 
 
 def record_run(rec: dict, path: Path | None = None) -> str:
+    """Persist metrics only.
+
+    The caller may retain a richer in-memory record for the live UI, but global
+    telemetry never stores prompt/model output, project/person identifiers,
+    URLs, validator excerpts, or event payloads.
+    """
     con = connect(path)
     try:
         run_id = rec.get("run_id") or new_run_id()
         con.execute(
             "INSERT OR REPLACE INTO runs (run_id, started_at, finished_at, workflow, mode,"
             " project, model_config, cost_usd, tokens_in, tokens_out, latency_s,"
-            " validator_results, approvals, failure_class, status, summary)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " validator_results, approvals, failure_class, status, summary, input_bytes,"
+            " prompt_fingerprint, data_classes)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, rec.get("started_at", ""), rec.get("finished_at", ""),
-             rec["workflow"], rec["mode"], rec.get("project", ""),
-             json.dumps(rec.get("model_config", {})),
+             rec["workflow"], rec["mode"], "",
+             json.dumps({k: v for k, v in rec.get("model_config", {}).items()
+                         if k in {"provider", "model", "effort", "auth"}}),
              rec.get("cost_usd", 0), rec.get("tokens_in", 0), rec.get("tokens_out", 0),
              rec.get("latency_s", 0),
-             json.dumps(rec.get("validator_results", [])),
-             json.dumps(rec.get("approvals", [])),
+             json.dumps([{
+                 "validator": str(item.get("validator", ""))[:100],
+                 "returncode": int(item.get("returncode", 0) or 0),
+             } for item in rec.get("validator_results", []) if isinstance(item, dict)]),
+             "[]",
              rec.get("failure_class", ""), rec.get("status", "ok"),
-             rec.get("summary", "")))
-        for i, ev in enumerate(rec.get("events", [])):
-            con.execute("INSERT INTO events (run_id, seq, type, payload) VALUES (?,?,?,?)",
-                        (run_id, i, ev.get("type", ""), json.dumps(ev)))
+             "", int(rec.get("input_bytes", 0) or 0),
+             str(rec.get("prompt_fingerprint", ""))[:64],
+             json.dumps(sorted(set(rec.get("data_classes", []))))))
+        con.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
         con.commit()
         return run_id
     finally:
@@ -141,8 +167,7 @@ def get_run(run_id: str, path: Path | None = None) -> dict | None:
         if r is None:
             return None
         rec = dict(r)
-        rec["events"] = [json.loads(e[0]) for e in con.execute(
-            "SELECT payload FROM events WHERE run_id = ? ORDER BY seq", (run_id,))]
+        rec["events"] = []
         return rec
     finally:
         con.close()

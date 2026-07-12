@@ -7,6 +7,6 @@ rewrites it. See docs/spec/product-spec.md (v2).
 
 __version__ = "0.1.0"
 
-# Product name is a soft human input (<<HUMAN_INPUT:product.name>>, default used).
+# Stable public product name and CLI metadata.
 PRODUCT_NAME = "RoleScout"
 CLI_NAME = "rolescout"

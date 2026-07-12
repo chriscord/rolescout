@@ -6,17 +6,19 @@ Single source of truth for the `job_list` and `tracker` schemas. All skills that
 
 Each search project has its own store (see `references/project-structure.md`); scripts resolve the active project via `active-project.json`.
 
-1. **SQLite — source of truth**: `<project>/data/recruiting.db`, tables `job_list` and `tracker`. Create/verify with `python scripts/init_db.py` (or `ensure_recruiting_sheet.py`, which delegates). The DB itself enforces primary keys, enums, fit_score range, and the tracker→job_list foreign key.
-2. **Generated views — never hand-edit** (regenerated on every write by `scripts/upsert_rows.py`):
-   - `<project>/data/job_list.csv`, `tracker.csv` — diff-able mirrors, also used as validator inputs.
-   - `<project>/data/recruiting-pipeline.xlsx` — human view: both tables plus a `pipeline` summary sheet (status counts, overdue next actions).
+1. **SQLite — operational source of truth**: public job facts and the current UI selection live in `<project>/data/public-opportunities.db` (`job_list`, `job_visibility`); private application/contact/status facts live in `<project>/private/pipeline.db` (`tracker`). `python scripts/init_db.py` creates the stores and imports a legacy `data/recruiting.db` once.
+2. **Explicit exports — never operational inputs**:
+   - `rolescout export --public` writes `<project>/exports/public-opportunities.csv`.
+   - `rolescout export --private` writes `<project>/private/exports/pipeline.csv`.
+   - `--xlsx` creates a separate workbook for the selected sensitivity class. A combined workbook is never created by default. Every export has a sensitivity/revision manifest and is atomically replaced.
 3. **External sheet (optional, read-only)** — the user may keep a Google Sheet copy (ID/URL in the project's `project.json` `external_sheet` field). With only read access (Drive connector), use it to reconcile the user's manual edits before writing locally; offer changed rows in paste-ready form afterward. If a write-capable Sheets connector appears, verify headers with `ensure_recruiting_sheet.py --check-headers` before any write.
 
 ### Write discipline
 
 - **Validate before write**: run the relevant validator (`scripts/validate_job_rows.py` / `scripts/validate_tracker_rows.py`) on the candidate rows. `upsert_rows.py` re-runs it and refuses to write on FAIL.
 - **Upsert, don't append blindly**: `job_list` keys on `job_id`; `tracker` keys on `application_id`. `scripts/upsert_rows.py <table> rows.json` handles this transactionally.
-- **Read after write**: `upsert_rows.py` verifies from the DB and regenerates all views automatically. For external sheet writes (connector case), re-read the written range yourself.
+- **Patch semantics**: omitted/empty values preserve existing data; `{"$clear": true}` explicitly clears a field; `{"$set": "value"}` explicitly sets one.
+- **Read after write**: `upsert_rows.py` verifies normalized field equality and reports inserted/changed/unchanged counts. Exports are on demand, never regenerated as an upsert side effect.
 
 ## `job_list` columns (exact order)
 

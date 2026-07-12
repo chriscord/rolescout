@@ -10,10 +10,16 @@ One folder per person, keyed by a short code (e.g. `ck`). Contains what is true 
 profiles/<person>/
   candidate-profile.md    # built by candidate-profile-builder
   evidence-map.md         # claim -> source mapping (EV- ids)
+  decision-policy.json    # canonical model-safe constraints from standing instructions
   <raw source files>      # resumes, exports the user dropped in
 ```
 
 The profile is written once and *shared* by every search project of that person. Industry-specific positioning does NOT belong here — it belongs to the project.
+
+Score and prep runners use these exact paths and `references/scoring-policy.json`; model
+stages do not search the workspace. Raw `profile-meta.json` instructions stay local input.
+The generated decision policy excludes `<user_profile>` biography blocks while preserving
+the user's `<preference>` constraints.
 
 ## Project scope — `projects/<person>--<focus>/` (campaign)
 
@@ -22,7 +28,10 @@ One folder per (person × target industry focus), e.g. `projects/ck--ai-infra/`,
 ```
 projects/<person>--<focus>/
   project.json            # {person, focus, profile_dir, created_at, status, external_sheet}
-  data/                   # recruiting.db (source of truth) + generated views
+  data/                   # public-opportunities.db + focused/search state
+  private/                # pipeline.db + private exports
+  runtime/                # disposable caches/logs
+  exports/                # explicit public-safe exports + manifests
   targets/jobs/           # JD snapshots
   targets/job-groups/     # group files
   strategy/               # scoring-config.json, job-ratings.json, job-scores.json, target-priorities.md

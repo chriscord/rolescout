@@ -9,7 +9,6 @@ Exit 0 = healthy (warnings allowed). Exit 1 = a real defect.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import sys
 import uuid
@@ -98,6 +97,17 @@ def run_checks(root: Path | None = None) -> list[tuple[str, str, str]]:
             note = "" if status else " (login state unknown - old CLI)"
             results.append((OK, "llm backend",
                             f"codex CLI (ChatGPT subscription){note} - live runs enabled"))
+        provider = object.__new__(codex_mod.CodexProvider)
+        provider.exe = codex_mod.binary() or "codex"
+        command = provider._exec_command("score", cwd=str(home_dir()), profile={
+            "model": "contract-check", "effort": "low", "settings_file": "doctor",
+        })
+        if "--skip-git-repo-check" not in command:
+            results.append((FAIL, "llm staging contract",
+                            "isolated non-git staging lacks --skip-git-repo-check"))
+        else:
+            results.append((OK, "llm staging contract",
+                            "isolated read-only staging accepts non-git working directories"))
     elif choice == "cli":
         from .llm import external_cli
         exe = external_cli.binary()
@@ -146,7 +156,7 @@ def run_checks(root: Path | None = None) -> list[tuple[str, str, str]]:
         except (OSError, UnicodeDecodeError, zipfile.BadZipFile):
             stale.append(d.name)
     if absent or stale:
-        results.append((WARN, "skill packages",
+        results.append((FAIL, "skill packages",
                         f"absent: {absent or '-'}; stale: {stale or '-'} "
                         "(rebuild from the release source tree)"))
     else:
@@ -158,25 +168,31 @@ def run_checks(root: Path | None = None) -> list[tuple[str, str, str]]:
         results.append((WARN, "project", "no active project - run `rolescout init`"))
     else:
         results.append((OK, "project", proj.name))
-        db = proj / "data" / "recruiting.db"
-        if db.exists():
+        public_db = proj / "data" / "public-opportunities.db"
+        private_db = proj / "private" / "pipeline.db"
+        if public_db.exists() and private_db.exists():
             try:
-                con = sqlite3.connect(db)
+                con = sqlite3.connect(public_db)
                 try:
                     tables = {r[0] for r in con.execute(
                         "SELECT name FROM sqlite_master WHERE type='table'")}
                 finally:
                     con.close()
-                need = {"job_list", "tracker"}
-                if need <= tables:
-                    results.append((OK, "project store", "job_list + tracker tables present"))
+                private_con = sqlite3.connect(private_db)
+                try:
+                    private_tables = {r[0] for r in private_con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                finally:
+                    private_con.close()
+                if "job_list" in tables and "tracker" in private_tables:
+                    results.append((OK, "project store", "split public job + private pipeline stores present"))
                 else:
-                    results.append((FAIL, "project store", f"missing tables {need - tables}"))
+                    results.append((FAIL, "project store", "split stores are missing job_list or tracker"))
             except sqlite3.Error as e:
                 results.append((FAIL, "project store", f"unreadable: {e}"))
         else:
             results.append((WARN, "project store",
-                            "data/recruiting.db missing - run `rolescout init` to (re)create"))
+                            "split stores missing - run `python scripts/init_db.py` to migrate/create"))
 
     # 7. telemetry home
     try:

@@ -4,7 +4,7 @@
 Operates on the ACTIVE search project (active-project.json / RECRUITING_PROJECT_DIR).
 
 Usage:
-  python3 scripts/init_db.py            # create <project>/data/recruiting.db, import mirrors, export views
+  python3 scripts/init_db.py            # create/verify split public/private stores
   python3 scripts/init_db.py --check    # verify DB exists with expected tables/columns
 
 Import is upsert-based and idempotent: rerunning never duplicates rows.
@@ -31,7 +31,8 @@ def main() -> int:
     con = store_io.connect()
     status = 0
     for store, cols in store_io.COLS.items():
-        got = [r[1] for r in con.execute(f"PRAGMA table_info({store})")]
+        pragma = f"PRAGMA table_info({store})" if store == "job_list" else "PRAGMA private.table_info(tracker)"
+        got = [r[1] for r in con.execute(pragma)]
         if got != cols:
             print(f"FAIL: table {store} columns do not match schema.\n  expected: {cols}\n  got:      {got}")
             status = 1
@@ -47,11 +48,11 @@ def main() -> int:
                 with open(path, newline="", encoding="utf-8") as f:
                     rows = [r for r in csv.DictReader(f) if any(v.strip() for v in r.values())]
                 if rows:
-                    a, u = store_io.upsert(store, rows, con)
-                    print(f"IMPORTED {path.name}: {a} appended, {u} updated")
+                    inserted, changed, unchanged = store_io.upsert(store, rows, con)
+                    print(f"IMPORTED {path.name}: {inserted} inserted, {changed} changed, "
+                          f"{unchanged} unchanged")
         con.commit()
-        store_io.export_views(con)
-        print(f"Views exported: {', '.join(str(p.name) for p in store_io.mirrors().values())}, {store_io.xlsx_path().name}")
+        print(f"Stores ready: {store_io.public_db_path().name}; {store_io.private_db_path().name}")
     con.close()
     return status
 

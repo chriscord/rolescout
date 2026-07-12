@@ -23,8 +23,7 @@ app/
 /STATUS.md
 /docs/
 
-# ---- local-only QA/test harnesses ----
-/tests/
+# ---- local-only QA harnesses (the tracked tests/ suite is release-critical) ----
 /scripts/qa/
 /qa/
 /rolescout.local.env

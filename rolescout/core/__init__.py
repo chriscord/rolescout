@@ -32,9 +32,9 @@ SCRIPT_NAMES = [
     "capture_linkedin_profile", "resolve_company_sources",
     "build_location_search_urls",
     "merge_research_parts", "persist_job_rows", "probe_linkedin_jobs",
-    "deterministic_search", "finalize_score",
+    "deterministic_search", "reconcile_job_lifecycle", "finalize_score",
     "location_eligibility", "validate_linkedin_review",
-    "validate_interview_prep", "render_docx_gate",
+    "validate_interview_prep", "render_docx_gate", "build_resume_docx",
     "generate_coverage_audit", "analyze_search_plan", "analyze_search_coverage",
     "validate_application_packets",
 ]

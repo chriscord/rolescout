@@ -8,8 +8,11 @@ by policy (AGENTS.md §privacy) — lives only inside the repo's profiles/.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -49,8 +52,35 @@ def save(profile_dir: Path, **fields) -> Path:
     meta.update({k: v for k, v in fields.items() if v})
     meta["updated_at"] = date.today().isoformat()
     p = profile_dir / META_NAME
-    p.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _atomic_json(p, meta)
+    from . import decision_policy
+    decision_policy.build(profile_dir, str(meta.get("instructions", "")))
     return p
+
+
+def replace(profile_dir: Path, **fields) -> Path:
+    """Set supplied metadata fields exactly, including explicit empty values."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    meta = load(profile_dir)
+    meta.update(fields)
+    meta["updated_at"] = date.today().isoformat()
+    path = profile_dir / META_NAME
+    _atomic_json(path, meta)
+    from . import decision_policy
+    decision_policy.build(profile_dir, str(meta.get("instructions", "")))
+    return path
+
+
+def _atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    os.close(fd)
+    tmp = Path(raw)
+    try:
+        tmp.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def linkedin_url(profile_dir: Path | None) -> str:
@@ -58,12 +88,11 @@ def linkedin_url(profile_dir: Path | None) -> str:
 
 
 def instructions(profile_dir: Path | None) -> str:
-    """User's standing instructions — injected into
-    every live workflow prompt."""
+    """Raw standing instructions; decision-policy.json is the model-safe contract."""
     return load(profile_dir).get("instructions", "") if profile_dir else ""
 
 
-RESUME_SUFFIXES = {".pdf", ".docx", ".doc", ".md", ".txt", ".html"}
+RESUME_SUFFIXES = {".pdf", ".docx", ".md", ".txt", ".html"}
 _GENERATED = {
     "candidate-profile.md",
     "evidence-map.md",
@@ -71,6 +100,7 @@ _GENERATED = {
     "linkedin-analysis.md",
     "story-bank.md",
     "story-bank.json",
+    "decision-policy.json",
     META_NAME,
 }
 
@@ -88,6 +118,69 @@ def material_files(profile_dir: Path | None) -> list[dict]:
     return out
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def material_hashes(profile_dir: Path | None) -> dict[str, str]:
+    if profile_dir is None:
+        return {}
+    out: dict[str, str] = {}
+    for item in material_files(profile_dir):
+        path = profile_dir / str(item["name"])
+        try:
+            out[path.name] = file_sha256(path)
+        except OSError:
+            continue
+    return out
+
+
+def linkedin_content_fingerprint(profile_dir: Path | None) -> str:
+    if profile_dir is None:
+        return ""
+    path = profile_dir / "linkedin-current.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    marker = "## Visible LinkedIn Profile Text"
+    stable = text.split(marker, 1)[1].strip() if marker in text else text.strip()
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest() if stable else ""
+
+
+def source_fingerprint(profile_dir: Path) -> str:
+    meta = load(profile_dir)
+    payload = {
+        # Artifact meaning depends on source bytes, not on the local filename.
+        # Renaming an identical resume must not spend another model call.
+        "materials": sorted(material_hashes(profile_dir).values()),
+        "linkedin_url": str(meta.get("linkedin_url", "")),
+        "linkedin_content": linkedin_content_fingerprint(profile_dir),
+        "name": str(meta.get("name", "")),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def profile_is_current(profile_dir: Path) -> bool:
+    meta = load(profile_dir)
+    return bool(
+        (profile_dir / "candidate-profile.md").exists()
+        and (profile_dir / "evidence-map.md").exists()
+        and meta.get("profile_build_fingerprint") == source_fingerprint(profile_dir)
+    )
+
+
+def mark_profile_built(profile_dir: Path) -> str:
+    fingerprint = source_fingerprint(profile_dir)
+    replace(profile_dir, profile_build_fingerprint=fingerprint)
+    return fingerprint
+
+
 def list_persons(root: Path) -> list[dict]:
     out = []
     for d in sorted((root / "profiles").glob("*/")):
@@ -99,5 +192,7 @@ def list_persons(root: Path) -> list[dict]:
                     "linkedin_url": meta.get("linkedin_url", ""),
                     "instructions": meta.get("instructions", ""),
                     "has_profile": (d / "candidate-profile.md").exists(),
+                    "profile_current": profile_is_current(d),
+                    "linkedin_synced": bool(linkedin_content_fingerprint(d)),
                     "materials": material_files(d)})
     return out
