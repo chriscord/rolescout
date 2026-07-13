@@ -4,7 +4,7 @@ import json
 import time
 from pathlib import Path
 
-from rolescout.web import server as web_server
+from rolenavi.web import server as web_server
 
 
 def _project(root: Path) -> Path:

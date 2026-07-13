@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from rolescout import application_audit
-from rolescout.privacy.prompt_gateway import prepare_prompt_context
-from rolescout.runner import workflows
+from rolenavi import application_audit
+from rolenavi.privacy.prompt_gateway import prepare_prompt_context
+from rolenavi.runner import workflows
 
 
 def test_apply_selection_resolves_requested_roles_without_shared_title_false_positives(monkeypatch):

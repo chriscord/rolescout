@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from rolescout.runner import preflight, workflows
+from rolenavi.runner import preflight, workflows
 
 
 def _project(tmp_path: Path) -> tuple[Path, Path]:

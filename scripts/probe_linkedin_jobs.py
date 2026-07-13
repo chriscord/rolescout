@@ -118,8 +118,8 @@ def probe_with_playwright(project: Path, timeout_ms: int) -> str:
     from playwright.sync_api import sync_playwright
 
     user_data = Path(os.environ.get(
-        "ROLESCOUT_LINKEDIN_BROWSER_PROFILE",
-        Path.home() / ".rolescout" / "browser" / "linkedin-jobs",
+        "ROLENAVI_LINKEDIN_BROWSER_PROFILE",
+        Path.home() / ".rolenavi" / "browser" / "linkedin-jobs",
     )).expanduser()
     user_data.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:

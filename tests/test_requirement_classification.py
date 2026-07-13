@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rolescout.runner import workflows
+from rolenavi.runner import workflows
 from scripts import jd_text_cleaner
 
 
@@ -308,7 +308,7 @@ def test_requirement_batching_uses_output_complexity_not_only_job_count():
 
 def test_capability_ledger_requires_matching_source_fingerprint():
     payload = {
-        "schema": "rolescout-capability-ledger-v1",
+        "schema": "rolenavi-capability-ledger-v1",
         "source_fingerprint": "correct",
         "entries": [{
             "experience_id": "EXP-001",

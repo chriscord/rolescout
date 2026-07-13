@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create explicit sensitivity-separated RoleScout exports."""
+"""Create explicit sensitivity-separated RoleNavi exports."""
 
 import argparse
 import sys

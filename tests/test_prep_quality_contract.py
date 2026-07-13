@@ -7,12 +7,12 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from rolescout import core
-from rolescout.llm.codex import CodexProvider
-from rolescout.llm.prompts import workflow_prompt
-from rolescout.runner import workflows
-from rolescout.runner.workflows import _canonical_story_bank, _story_bank_markdown
-from rolescout.web import server as web_server
+from rolenavi import core
+from rolenavi.llm.codex import CodexProvider
+from rolenavi.llm.prompts import workflow_prompt
+from rolenavi.runner import workflows
+from rolenavi.runner.workflows import _canonical_story_bank, _story_bank_markdown
+from rolenavi.web import server as web_server
 
 
 def linkedin_review(*, extra_score_row: str = "") -> str:
@@ -151,7 +151,7 @@ def test_linkedin_capture_accepts_numbered_section_headings_and_nested_scroller(
 def test_linkedin_browser_backends_reuse_legacy_authenticated_session(tmp_path: Path,
                                                                       monkeypatch):
     capture = core.load("capture_linkedin_profile")
-    monkeypatch.setenv("ROLESCOUT_HOME", str(tmp_path))
+    monkeypatch.setenv("ROLENAVI_HOME", str(tmp_path))
     legacy = tmp_path / "browser" / "linkedin-playwright"
     legacy.mkdir(parents=True)
     assert capture.browser_session_dir() == legacy
@@ -290,8 +290,8 @@ def test_strategy_group_limit_rejects_near_one_role_per_group():
 
 def test_resume_packet_contract_is_exact_and_prompt_requires_typed_json():
     contract = workflows._resume_artifact_contract("product-leadership")
-    assert contract["schema"] == "rolescout-resume-group-artifacts-v1"
-    assert contract["target_brief"]["schema"] == "rolescout-resume-target-brief-v1"
+    assert contract["schema"] == "rolenavi-resume-group-artifacts-v1"
+    assert contract["target_brief"]["schema"] == "rolenavi-resume-target-brief-v1"
     assert contract["target_brief"]["priority_enum"] == ["must", "preferred"]
     prompt = workflow_prompt("prep-resume", {
         "runner_context_packet": {"artifact_contract": contract},
@@ -305,7 +305,7 @@ def test_resume_packet_contract_is_exact_and_prompt_requires_typed_json():
 
 def test_resume_schema_gate_accepts_contract_and_rejects_alternate_arrays():
     brief = {
-        "schema": "rolescout-resume-target-brief-v1",
+        "schema": "rolenavi-resume-target-brief-v1",
         "group": "product-leadership",
         "source_job_ids": ["job-1"],
         "positioning_angle": "Product-adjacent operator",
@@ -391,10 +391,10 @@ def test_resume_second_repair_receives_cumulative_validator_feedback(
     calls = []
 
     def result_envelope():
-        payload = {"schema": "rolescout-artifact-output-v1", "artifacts": [],
+        payload = {"schema": "rolenavi-artifact-output-v1", "artifacts": [],
                    "store_writes": [], "notes": []}
         return {"events": [{"type": "result", "content":
-                            "ROLESCOUT_ARTIFACT_OUTPUT_JSON:" + json.dumps(payload)}],
+                            "ROLENAVI_ARTIFACT_OUTPUT_JSON:" + json.dumps(payload)}],
                 "usage": {}}
 
     def provider_run(provider, workflow, context, on_stream, model_workflow):
@@ -434,10 +434,10 @@ def test_resume_second_repair_receives_cumulative_validator_feedback(
 
 def test_resume_repair_payload_is_merged_as_path_patch():
     def envelope(artifacts):
-        payload = {"schema": "rolescout-artifact-output-v1", "artifacts": artifacts,
+        payload = {"schema": "rolenavi-artifact-output-v1", "artifacts": artifacts,
                    "store_writes": [], "notes": []}
         return {"events": [{"type": "result", "content":
-                            "ROLESCOUT_ARTIFACT_OUTPUT_JSON:" + json.dumps(payload)}]}
+                            "ROLENAVI_ARTIFACT_OUTPUT_JSON:" + json.dumps(payload)}]}
 
     previous = envelope([
         {"path": "resumes/g/resume-draft.md", "text": "old draft"},
@@ -472,7 +472,7 @@ def test_interview_staging_path_stays_within_windows_legacy_budget(tmp_path: Pat
     # much deeper than a real project and would test an unrelated temp-path
     # budget instead of the staging layout that caused WinError 206.
     project = Path(
-        "C:/Users/candidate/Documents/_WorkTools/rolescout/"
+        "C:/Users/candidate/Documents/_WorkTools/rolenavi/"
         "projects/candidate--search-project"
     )
     ctx = workflows.RunContext("prep-interview", project, "mock")
@@ -530,7 +530,7 @@ def test_same_day_interview_pack_cache_reuses_complete_valid_set(
 
     monkeypatch.setattr(workflows.core, "run_script", lambda *args, **kwargs:
                         SimpleNamespace(returncode=0, stdout="PASS", stderr=""))
-    monkeypatch.setattr("rolescout.runner.preflight.profile_dir", lambda project: None)
+    monkeypatch.setattr("rolenavi.runner.preflight.profile_dir", lambda project: None)
     ctx = workflows.RunContext("prep-interview", tmp_path, "live")
     assert workflows._reuse_current_interview_packs(ctx, [role])
     assert workflows._interview_expected_artifact(role) in ctx.artifacts_written
@@ -697,7 +697,7 @@ def test_prep_state_exposes_durable_progress_and_revision(tmp_path: Path, monkey
     run = tmp_path / "runtime" / "runs" / "run-1"
     run.mkdir(parents=True)
     (run / "prep-progress.json").write_text(json.dumps({
-        "schema": "rolescout-prep-progress-v1", "run_id": "run-1",
+        "schema": "rolenavi-prep-progress-v1", "run_id": "run-1",
         "current_phase": "resume", "state": "running", "revision": 3,
         "phases": {"strategy": {"state": "published"},
                    "resume": {"state": "running", "completed": 1, "total": 2}},
@@ -804,7 +804,7 @@ def test_full_prep_downgrades_resume_failure_and_continues_interview(
 
     monkeypatch.setattr(workflows, "_run_resume_workflow", fail_resume)
     monkeypatch.setattr(workflows, "_story_bank_needs_refresh", lambda *args: False)
-    monkeypatch.setattr("rolescout.profile_meta.linkedin_url", lambda pdir: "")
+    monkeypatch.setattr("rolenavi.profile_meta.linkedin_url", lambda pdir: "")
 
     def interview(*args, **kwargs):
         called.append("interview")
@@ -827,7 +827,7 @@ def test_strategy_assignment_hydrates_complete_rows_before_upsert(tmp_path: Path
         "source_url": "https://example.com/jobs/123",
         "job_group": "old-group",
     }
-    monkeypatch.setattr("rolescout.repositories.job_rows",
+    monkeypatch.setattr("rolenavi.repositories.job_rows",
                         lambda project, job_ids=None: [dict(full)])
     rows = workflows._hydrate_strategy_group_assignments(tmp_path, [{
         "job_id": full["job_id"], "job_group": "strategy-operations",

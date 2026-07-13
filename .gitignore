@@ -1,5 +1,5 @@
 # ============================================================
-# RoleScout .gitignore — public GitHub distribution
+# RoleNavi .gitignore — public GitHub distribution
 # Rule of thumb: ship the product (code, skills, scripts,
 # references, benchmarks); never ship a person's career
 # data or anything a run/build regenerates.
@@ -26,7 +26,7 @@ app/
 # ---- local-only QA harnesses (the tracked tests/ suite is release-critical) ----
 /scripts/qa/
 /qa/
-/rolescout.local.env
+/rolenavi.local.env
 
 # ---- generated / regenerable ----
 /dashboard/

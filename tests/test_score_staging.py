@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from rolescout import score_staging
-from rolescout.runner import preflight, workflows
+from rolenavi import score_staging
+from rolenavi.runner import preflight, workflows
 
 
 def _rating(job_id: str, fingerprint: str) -> dict:
@@ -103,15 +103,15 @@ def test_repair_atomically_replaces_invalid_checkpoint(tmp_path: Path):
 
 
 def test_score_is_visible_as_a_separate_web_workflow():
-    ui = (Path(__file__).parents[1] / "rolescout" / "web" / "ui.html").read_text(
+    ui = (Path(__file__).parents[1] / "rolenavi" / "web" / "ui.html").read_text(
         encoding="utf-8"
     )
     assert "['search','score','prep'" in ui
     assert "'opportunity-plan','score'" not in ui
     workflow_source = (
-        Path(__file__).parents[1] / "rolescout" / "runner" / "workflows.py"
+        Path(__file__).parents[1] / "rolenavi" / "runner" / "workflows.py"
     ).read_text(encoding="utf-8")
-    assert "ROLESCOUT_SEARCH_AUTO_SCORE" not in workflow_source
+    assert "ROLENAVI_SEARCH_AUTO_SCORE" not in workflow_source
 
 
 def test_normalization_failure_quarantines_one_row_without_failing_score(monkeypatch, tmp_path: Path):

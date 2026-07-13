@@ -36,7 +36,7 @@ def project_dir() -> Path:
     else:
         ap = ROOT / "active-project.json"
         if not ap.exists():
-            sys.exit("FAIL: no active project. Run rolescout init or set RECRUITING_PROJECT_DIR.")
+            sys.exit("FAIL: no active project. Run rolenavi init or set RECRUITING_PROJECT_DIR.")
         with open(ap, encoding="utf-8") as f:
             p = (ROOT / json.load(f).get("active", "")).resolve()
     if not (p / "project.json").exists():
@@ -335,7 +335,7 @@ def _atomic_csv(path: Path, store: str, rows: list[dict], rev: int) -> None:
         os.replace(tmp, path)
         manifest = path.with_suffix(path.suffix + ".manifest.json")
         manifest.write_text(json.dumps({
-            "schema": "rolescout-export-manifest-v1", "sensitivity": (
+            "schema": "rolenavi-export-manifest-v1", "sensitivity": (
                 "public" if store == "job_list" else "private"),
             "store": store, "database_revision": rev, "generated_at": date.today().isoformat(),
         }, indent=2) + "\n", encoding="utf-8")

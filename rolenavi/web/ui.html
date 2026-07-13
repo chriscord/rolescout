@@ -1,0 +1,2239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoleNavi</title>
+<style>
+:root { --navy:#111827; --navy-2:#1f2937; --brand:#5446d8; --brand-hover:#4338ca;
+--brand-strong:#312e81; --brand-soft:#eef2ff; --brand-border:#c7d2fe;
+--bg:#f6f7fb; --surface:#fff; --surface-2:#f1f4f9; --surface-3:#e8ecf5; --border:#d9deeb;
+--text:#182033; --muted:#667085; --accent:var(--brand); --accent-hover:var(--brand-hover);
+--accent-soft:var(--brand-soft); --green:#20785f; --green-bg:#e9f6f1; --red:#c2415d;
+--red-bg:#fdecef; --amber:#b7791f; --header:var(--navy); --radius:8px; --header-h:56px;
+--panel:var(--navy); --panel-2:var(--navy-2); --panel-border:#374151; --panel-text:#e5e7eb;
+--panel-muted:#a7b0c0; --warn:#b7a6ff; --warn-bg:#211c38; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,'Poppins',sans-serif; background:var(--bg); color:var(--text); }
+a { color:var(--accent); text-decoration:none; }
+header { background:var(--header); color:#f7f7fb; height:var(--header-h); padding:0 1.6rem;
+display:flex; align-items:center; gap:1.1rem; position:sticky; top:0; z-index:40; }
+header .logo { font-weight:700; cursor:pointer; }
+header nav a { color:#b8b5c8; margin-right:.9rem; font-size:.9rem; }
+header nav a.on { color:#fff; border-bottom:2px solid var(--accent); padding-bottom:2px; }
+.badge { padding:.15em .6em; border-radius:999px; font-size:.72rem; background:var(--green); color:#fff; }
+.badge.mock { background:var(--muted); }
+header .right { margin-left:auto; color:#b8b5c8; font-size:.75rem; }
+main { max-width:1280px; margin:0 auto; padding:1.4rem 1.6rem 4rem; }
+main.workspace-view { max-width:none; height:calc(100vh - var(--header-h)); overflow:hidden;
+padding:1rem 1.2rem; }
+h1 { font-size:1.25rem; margin-bottom:1rem; }
+h2 { font-size:.95rem; margin:1.2rem 0 .5rem; color:#30364a; }
+button { font-family:inherit; border:1px solid var(--border); border-radius:var(--radius);
+background:var(--surface); color:var(--text); min-height:34px; padding:.48em .86em;
+cursor:pointer; font-size:.86rem; font-weight:600; line-height:1.2; display:inline-flex;
+align-items:center; justify-content:center; gap:.35rem;
+transition:background-color .12s,border-color .12s,color .12s; }
+button:hover { border-color:var(--brand-border); background:var(--brand-soft); color:var(--brand-hover); }
+button.primary, button.pref, button.send { background:var(--brand); border-color:var(--brand); color:#fff; }
+button.primary:hover, button.pref:hover, button.send:hover {
+background:var(--brand-hover); border-color:var(--brand-hover); color:#fff; }
+button.deny { background:var(--red-bg); color:var(--red); border-color:#f3b4c0; }
+button.deny:hover { background:#fbdde4; border-color:var(--red); color:var(--red); }
+button.ghost { background:transparent; }
+button:focus-visible, input[type=text]:focus-visible, textarea:focus-visible, select:focus-visible {
+outline:2px solid var(--brand-border); outline-offset:2px; border-color:var(--brand); }
+button:disabled { opacity:.45; cursor:default; }
+button:disabled:hover { background:var(--surface); border-color:var(--border); color:var(--text); }
+input[type=text], textarea, select { width:100%; padding:.55em .7em; border:1px solid var(--border);
+border-radius:var(--radius); font-family:inherit; font-size:.9rem; background:var(--surface); }
+textarea { min-height:110px; resize:vertical; line-height:1.5; }
+label { display:block; font-size:.78rem; color:var(--muted); margin:.7rem 0 .25rem; }
+label .req { color:var(--accent); }
+.muted { color:var(--muted); font-size:.85rem; }
+.topbar { display:flex; align-items:center; gap:.6rem; margin-bottom:1.1rem; }
+.topbar h1 { margin:0; }
+.topbar .spacer { flex:1; }
+
+/* ---- project cards ---- */
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:1rem; }
+.pcard { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+padding:1.1rem 1.15rem; cursor:pointer; position:relative;
+transition:background-color .12s,border-color .12s;
+min-height:132px; display:flex; flex-direction:column; gap:.35rem; }
+.pcard:hover { border-color:var(--brand-border); background:var(--brand-soft); }
+.pcard .t { font-weight:600; font-size:.98rem; }
+.pcard .meta { font-size:.78rem; color:var(--muted); }
+.pcard .counts { margin-top:auto; font-size:.78rem; color:#555166; }
+.pcard input[type=checkbox] { position:absolute; top:.8rem; right:.8rem; width:1.05rem; height:1.05rem; }
+.pcard.newcard { border:2px dashed var(--border); background:transparent; align-items:center;
+justify-content:center; color:var(--muted); font-size:.95rem; }
+.pcard.newcard:hover { border-color:var(--accent); color:var(--accent); }
+.pcard.newcard .plus { font-size:1.6rem; line-height:1; }
+
+/* ---- workspace ---- */
+.workspace-shell { max-width:1480px; height:100%; margin:0 auto; display:grid;
+grid-template-columns:minmax(0,1fr) 410px; gap:1.1rem; align-items:stretch; }
+.project-main { min-width:0; min-height:0; display:flex; flex-direction:column; }
+.project-toolbar { flex:0 0 auto; display:flex; align-items:center; gap:.6rem; padding:.15rem 0 .8rem; }
+.project-toolbar h1 { margin:0; }
+.tab-body { flex:1 1 auto; min-height:0; overflow:auto; padding:.1rem .05rem .8rem 0; }
+@media (max-width:980px){
+  main.workspace-view { height:auto; overflow:auto; }
+  .workspace-shell { height:auto; grid-template-columns:1fr; }
+  .project-main { min-height:70vh; }
+}
+.ws { display:grid; grid-template-columns:minmax(0,1fr) 400px; gap:1.2rem; align-items:start; }
+@media (max-width:980px){ .ws { grid-template-columns:1fr; } }
+.tabs { flex:0 0 auto; display:flex; gap:.15rem; border-bottom:2px solid var(--border); margin-bottom:.9rem; }
+.tabs button { border:none; border-radius:8px 8px 0 0; background:transparent; padding:.55em 1em; }
+.tabs button.on { background:var(--surface); border:1px solid var(--border); border-bottom-color:var(--surface);
+margin-bottom:-2px; font-weight:700; color:var(--brand-hover); }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1rem; }
+table { border-collapse:collapse; width:100%; font-size:.82rem; background:var(--surface); }
+th,td { border:1px solid var(--border); padding:.38em .55em; text-align:left; vertical-align:top; }
+th { background:var(--surface-2); font-size:.72rem; }
+th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+th.sortable:hover { color:var(--accent-hover); }
+.table-wrap { max-height:100%; overflow:auto; border:1px solid var(--border); border-radius:var(--radius);
+background:var(--surface); }
+.table-wrap table { border:0; min-width:980px; }
+.table-wrap th { position:sticky; top:0; z-index:3; border-bottom:1px solid var(--border); }
+.table-wrap th:first-child,.table-wrap td:first-child { border-left:0; }
+.table-wrap th:last-child,.table-wrap td:last-child { border-right:0; }
+.table-tools { display:flex; flex-wrap:wrap; align-items:end; gap:.55rem; margin:.2rem 0 .75rem; }
+.table-tools label { margin:0; min-width:150px; }
+.table-tools select { margin-top:.2rem; padding:.42em .55em; font-size:.82rem; }
+.table-count { margin-left:auto; align-self:center; }
+.next-action-cell { display:flex; align-items:flex-start; justify-content:space-between; gap:.45rem; }
+.next-action-cell span { min-width:0; }
+.icon-btn { width:28px; min-width:28px; height:28px; min-height:28px; padding:0; border-radius:6px; }
+.application-action-btn { flex:0 0 auto; font-size:.72rem; }
+.status-pill { display:inline-block; padding:.12em .5em; border-radius:999px; font-size:.72rem;
+background:var(--brand-soft); color:var(--brand-hover); border:1px solid var(--brand-border); }
+.tracker-status-select { width:auto; min-width:128px; max-width:100%; padding:.25em .6em;
+border-radius:999px; font-size:.76rem; font-weight:700; }
+.tracker-status-select:disabled { opacity:.65; }
+.status-pill.removed { background:var(--red-bg); color:var(--red); border-color:#f6bcc8; }
+.status-pill.closed { background:#eceaf3; color:#656073; border-color:#d8d5e3; }
+.status-pill.unknown { background:#eef2f7; color:#526070; border-color:#d7dfea; }
+.score-stale { display:block; color:var(--red); font-size:.65rem; font-weight:600; }
+/* application statuses mirrored from the tracker (applied and beyond) */
+.status-pill.applied, .status-pill.to_interview_1, .status-pill.to_interview_2,
+.status-pill.to_interview_3,
+.tracker-status-select.applied, .tracker-status-select.to_interview_1,
+.tracker-status-select.to_interview_2, .tracker-status-select.to_interview_3 {
+background:var(--green-bg); color:var(--green); border-color:#bfe3d4; }
+.status-pill.offer, .status-pill.accepted,
+.tracker-status-select.offer, .tracker-status-select.accepted {
+background:var(--green); color:#fff; border-color:var(--green); }
+.status-pill.rejected, .tracker-status-select.rejected {
+background:var(--red-bg); color:var(--red); border-color:#f6bcc8; }
+.status-pill.withdrawn, .status-pill.paused,
+.tracker-status-select.withdrawn, .tracker-status-select.paused {
+background:#eceaf3; color:#656073; border-color:#d8d5e3; }
+td.score { font-weight:700; text-align:right; }
+.inbox-item { border-left:3px solid var(--border); padding:.5rem .8rem; margin:.45rem 0;
+background:var(--surface); border-radius:0 8px 8px 0; font-size:.85rem; }
+.inbox-item.overdue { border-left-color:var(--red); } .inbox-item.today,.inbox-item.gap { border-left-color:var(--accent); }
+.inbox-item.run-done { border-left-color:var(--green); } .inbox-item.run-partial { border-left-color:var(--amber); }
+.inbox-item.run-blocked { border-left-color:var(--accent); } .inbox-item.run-failed { border-left-color:var(--red); }
+.inbox-item.run-cancelled { border-left-color:var(--muted); }
+.inbox-item .k { font-size:.68rem; text-transform:uppercase; color:var(--muted); }
+.inline-fix { min-height:26px; padding:.22em .65em; margin-left:.45rem; font-size:.74rem; }
+.filelist a { display:block; padding:.3rem 0; font-size:.85rem; border-bottom:1px dashed var(--border); }
+.matrow { display:flex; align-items:center; justify-content:space-between; gap:.5rem;
+padding:.3rem 0; font-size:.85rem; border-bottom:1px dashed var(--border); }
+.matrow button.mini { font-size:.68rem; padding:.18em .6em; flex:0 0 auto; }
+.profile-run-status { margin-top:.55rem; color:var(--muted); font-size:.82rem; min-height:1.35rem; }
+.inline-dots { display:inline-flex; gap:.18rem; margin-left:.2rem; vertical-align:middle; }
+.inline-dots span { width:.28rem; height:.28rem; border-radius:50%; background:currentColor;
+opacity:.35; animation:dotBlink 1.2s infinite; }
+.inline-dots span:nth-child(2) { animation-delay:.18s; }
+.inline-dots span:nth-child(3) { animation-delay:.36s; }
+@keyframes dotBlink { 50% { opacity:1; transform:translateY(-1px); } }
+pre.preview { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+padding:.8rem 1rem; font-size:.8rem; overflow:auto; max-height:480px; white-space:pre-wrap; }
+
+/* ---- strategy article ---- */
+.article { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+padding:1.6rem 2rem; max-width:860px; font-family:Georgia,'Lora',serif; line-height:1.65; font-size:.95rem; }
+.article h1 { font-family:-apple-system,sans-serif; font-size:1.3rem; margin:0 0 .8rem; }
+.article h2 { font-family:-apple-system,sans-serif; font-size:1.02rem; margin:1.6rem 0 .5rem;
+border-bottom:2px solid var(--border); padding-bottom:.25rem; color:var(--text); }
+.article h3 { font-family:-apple-system,sans-serif; font-size:.92rem; margin:1.1rem 0 .4rem; }
+.article ul,.article ol { margin:.4rem 0 .8rem 1.4rem; }
+.article table { font-size:.82rem; margin:.6rem 0 1rem; }
+.article code { background:var(--surface-2); padding:.05em .35em; border-radius:4px; font-size:.85em; }
+.article blockquote { border-left:3px solid var(--accent); padding:.2rem .9rem; color:#555166; margin:.6rem 0; }
+.article .lede { color:#555166; }
+.kicker { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--accent);
+font-family:-apple-system,sans-serif; }
+
+/* ---- IDE-style agent panel ---- */
+.agent { background:var(--panel); border:1px solid var(--panel-border); border-radius:var(--radius);
+color:var(--panel-text); display:flex; flex-direction:column;
+height:100%; min-height:0; position:static;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.agent .ahead { display:flex; align-items:center; gap:.5rem; padding:.6rem .9rem;
+border-bottom:1px solid var(--panel-border); font-size:.72rem; text-transform:uppercase;
+letter-spacing:.07em; color:var(--panel-muted); font-family:-apple-system,sans-serif; }
+.agent .dot { width:.55rem; height:.55rem; border-radius:50%; background:var(--panel-muted); }
+.agent .dot.live { background:#7fbf7f; outline:2px solid rgba(127,191,127,.22); animation:pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity:.45; } }
+.afeed { flex:1; overflow-y:scroll; padding:.7rem .9rem; font-size:.76rem; line-height:1.55;
+scrollbar-width:thin; scrollbar-color:#5d5674 var(--panel); }
+.afeed::-webkit-scrollbar { width:10px; }
+.afeed::-webkit-scrollbar-track { background:var(--panel); }
+.afeed::-webkit-scrollbar-thumb { background:#5d5674; border-radius:8px; border:2px solid var(--panel); }
+.msg { margin:.15rem 0; white-space:pre-wrap; word-break:break-word; }
+.msg .ts { color:#777286; margin-right:.55em; font-size:.68rem; }
+.msg.user { margin:.5rem 0 .65rem auto; max-width:92%; padding:.5rem .65rem;
+border:1px solid #4f456b; border-radius:8px; background:#282338; color:#f4f1ff;
+font-family:-apple-system,sans-serif; font-size:.82rem; line-height:1.45; }
+.msg.user .ts { color:#b9b1d6; display:block; margin:0 0 .18rem; }
+.msg.user .chip { display:none; }
+.msg.stream { color:#9db7d3; }
+.msg.info { color:var(--panel-muted); }
+.msg.artifact,.msg.store,.msg.validator { color:#a8c7fa; }
+.msg.approval,.msg.approval_wait { color:#bba7ff; }
+.msg.attention { color:#d6b4ff; background:rgba(126,87,194,.16); border-left:3px solid #b388ff;
+padding:.35rem .5rem; margin:.4rem 0; border-radius:0 5px 5px 0; }
+.msg.attention .chip { color:#e0c7ff; border-color:#9c6ade; }
+.msg.error { color:#e07b7b; } .msg.result,.msg.done { color:#a3be8c; }
+.msg .chip { display:inline-block; border:1px solid var(--panel-border); border-radius:4px;
+padding:0 .4em; margin-right:.45em; font-size:.62rem; text-transform:uppercase; color:var(--panel-muted); }
+.msg.activity-indicator { color:var(--panel-muted); }
+.msg.activity-indicator .chip { border-color:#4b5563; }
+.typing-dots { display:inline-flex; gap:.22rem; margin-left:.4rem; vertical-align:middle; }
+.typing-dots span { width:.3rem; height:.3rem; border-radius:50%; background:currentColor;
+opacity:.35; animation:dotBlink 1.2s infinite; }
+.typing-dots span:nth-child(2) { animation-delay:.18s; }
+.typing-dots span:nth-child(3) { animation-delay:.36s; }
+.acompose { border-top:1px solid var(--panel-border); padding:.6rem .7rem; }
+.acompose .chips { display:flex; flex-wrap:wrap; gap:.3rem; margin-bottom:.45rem; }
+.acompose .chips button { background:var(--panel-2); border:1px solid var(--panel-border);
+color:var(--panel-text); font-size:.72rem; padding:.3em .7em; border-radius:999px;
+font-family:-apple-system,sans-serif; }
+.acompose .chips button:hover { border-color:#4b5563; background:#273449; color:#fff; }
+.acompose .chips button.sel { border-color:var(--warn); color:#fff; background:#2b2450; }
+.acompose .row { display:flex; gap:.45rem; }
+.acompose input { flex:1; background:var(--panel-2); border:1px solid var(--panel-border);
+color:var(--panel-text); border-radius:8px; padding:.55em .7em; font-size:.8rem;
+font-family:inherit; }
+.acompose input::placeholder { color:#777286; }
+.acompose .send { background:var(--brand); border-color:var(--brand); color:#fff; border-radius:8px;
+padding:.5em 1em; font-family:-apple-system,sans-serif; min-width:72px; }
+.acompose .send:hover { background:var(--brand-hover); border-color:var(--brand-hover); }
+.acompose .send:disabled { opacity:.4; }
+.acompose .send.stop, button.send.stop { background:var(--red); border-color:var(--red); }
+.stop-ico { display:inline-block; transform:scale(2.4); transform-origin:center; line-height:1; }
+.apCard { background:var(--warn-bg); border:1px solid var(--accent); border-radius:8px;
+padding:.7rem .8rem; margin:.5rem 0; font-family:-apple-system,sans-serif; }
+.apCard pre { background:var(--panel-2); border:1px solid var(--panel-border); color:var(--panel-text);
+padding:.5em .6em; margin:.5em 0; font-size:.7rem; overflow-x:auto; max-height:160px;
+font-family:ui-monospace,Menlo,monospace; white-space:pre-wrap; }
+.modal-bg { position:fixed; inset:0; background:rgba(20,20,35,.45); display:none;
+align-items:flex-start; justify-content:center; padding-top:6vh; z-index:50; }
+.modal { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);
+padding:1.4rem 1.5rem; width:520px; max-width:92vw;
+max-height:84vh; overflow-y:auto; position:relative; }
+.modal.application-modal { width:920px; }
+.modal-close { position:absolute; top:.7rem; right:.7rem; width:30px; min-width:30px;
+height:30px; min-height:30px; padding:0; border-radius:6px; }
+.modal-title { padding-right:2.4rem; }
+.ready { display:flex; gap:.5rem; flex-wrap:wrap; margin:.4rem 0 .8rem; }
+.ready span { padding:.25em .7em; border-radius:999px; font-size:.78rem; border:1px solid var(--border); }
+.ready .ok { background:var(--green-bg); color:var(--green); border-color:var(--green); }
+.ready .no { background:var(--red-bg); color:var(--red); border-color:var(--red); }
+.prep-view-tabs { display:flex; gap:.25rem; border-bottom:1px solid var(--border); margin:.9rem 0 .8rem; }
+.prep-view-tabs button { border:none; border-radius:8px 8px 0 0; background:transparent; }
+.prep-view-tabs button.on { background:var(--surface); border:1px solid var(--border);
+border-bottom-color:var(--surface); margin-bottom:-1px; color:var(--accent-hover); font-weight:600; }
+.prep-artifact-tabs,.interview-picker { display:flex; flex-wrap:wrap; gap:.35rem; margin:.45rem 0 .9rem; }
+.prep-artifact-tabs button,.interview-picker button { font-size:.78rem; padding:.35em .65em; }
+.prep-artifact-tabs button.on,.interview-picker button.on { border-color:var(--accent); color:var(--accent-hover);
+background:var(--accent-soft); }
+.prep-detail { max-width:920px; }
+.prep-detail.wide { max-width:none; }
+.source-link { display:inline-block; margin:.25rem 0 .7rem; font-size:.78rem; }
+.resume-scroll { max-height:74vh; overflow-y:auto; border:1px solid var(--border);
+border-radius:var(--radius); background:var(--surface-2); padding:.55rem; }
+.resume-page { background:#fff; border:1px solid var(--border); border-radius:6px;
+padding:2rem 2.5rem; width:100%;
+font-family:'Times New Roman',Times,serif; line-height:1.45; color:#16161d; }
+.resume-page p, .resume-page li { font-size:.92rem; }
+.rs-check { border-radius:999px; padding:.22em .7em; font-size:.75rem; }
+.resume-page h1 { font-size:1.55rem; margin:0 0 .5rem; letter-spacing:0; }
+.resume-page h2 { font-size:.86rem; margin:1.15rem 0 .35rem; padding-bottom:.2rem;
+border-bottom:1px solid #d9d7e5; text-transform:uppercase; color:#2c2938; }
+.resume-page ul { margin:.25rem 0 .7rem 1.1rem; }
+.resume-page li { margin:.18rem 0; }
+.linkedin-profile { max-width:860px; }
+.linkedin-profile-head { background:#fff; border:1px solid var(--border); border-radius:8px;
+padding:1rem 1.1rem; margin-bottom:.7rem; }
+.linkedin-change-card { background:#fff; border:1px solid var(--border); border-radius:8px;
+padding:.95rem 1rem; margin:.65rem 0; }
+.li-field { font-weight:700; margin-bottom:.55rem; }
+.li-diff { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:.65rem;
+align-items:stretch; }
+.li-box { background:var(--surface-2); border:1px solid var(--border); border-radius:6px;
+padding:.65rem .7rem; min-width:0; }
+.li-box b { display:block; font-size:.68rem; text-transform:uppercase; color:var(--muted); margin-bottom:.25rem; }
+.li-box p { font-size:.84rem; line-height:1.45; white-space:pre-wrap; }
+.li-arrow { color:var(--accent); font-weight:700; align-self:center; }
+.li-why { margin-top:.55rem; font-size:.84rem; color:#555166; }
+
+/* ---- linkedin review: part-1 scorecard summary + part-2 before/after mocks ---- */
+.li-review { max-width:100%; }
+.li-summary { background:#fff; border:1px solid var(--border); border-radius:var(--radius);
+padding:1rem 1.1rem; margin-bottom:.9rem; }
+.li-summary-head { display:flex; gap:1rem; align-items:flex-start; }
+.li-sum-title { font-weight:700; font-size:1.02rem; }
+.li-sum-meta { color:var(--muted); font-size:.75rem; margin-top:.2rem; }
+.li-overall { margin-left:auto; text-align:center; border-radius:var(--radius); padding:.45rem .85rem;
+min-width:78px; flex:0 0 auto; }
+.li-overall span { font-size:1.25rem; font-weight:700; display:block; line-height:1.2; }
+.li-overall small { font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+.li-good { background:var(--green-bg); color:var(--green); }
+.li-mid { background:#fdf3dd; color:#8a6d1a; }
+.li-bad { background:var(--red-bg); color:var(--red); }
+.li-chiprow { display:flex; flex-wrap:wrap; gap:.35rem; margin:.75rem 0 .1rem; }
+.li-chip { border:none; border-radius:999px; padding:.22em .7em; font-size:.75rem; cursor:pointer; }
+.li-chip b { margin-left:.4em; }
+.li-fixes { margin-top:.7rem; font-size:.83rem; }
+.li-fixes b { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+.li-fixes ol { margin:.3rem 0 0 1.25rem; }
+.li-fixes li { margin:.15rem 0; }
+.li-section-card { background:#fff; border:1px solid var(--border); border-radius:var(--radius);
+padding:.9rem 1rem; margin:.7rem 0; }
+.li-sec-head { display:flex; align-items:center; gap:.55rem; margin-bottom:.6rem; }
+.li-sec-name { font-weight:700; }
+.li-score-pill { font-size:.72rem; border-radius:999px; padding:.12em .6em; }
+.li-ba { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; align-items:start; }
+@media (max-width:1280px){ .li-ba { grid-template-columns:1fr; } }
+.li-pane-tag { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em; margin-bottom:.3rem; }
+.li-pane.before .li-pane-tag { color:var(--muted); }
+.li-pane.after .li-pane-tag { color:var(--green); }
+.li-pane.before .lim { filter:grayscale(.2); }
+.li-pane.after .lim { border-color:#8fbf9f; }
+.li-remove { margin-top:.65rem; font-size:.82rem; }
+.li-remove b { color:var(--red); font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; }
+.li-remove ul { margin:.25rem 0 0 1.2rem; }
+.li-remove li { margin:.15rem 0; }
+.li-why2 { margin-top:.5rem; font-size:.82rem; color:#555166; }
+.li-guidance { margin-top:.55rem; padding:.55rem .65rem; border-left:3px solid var(--accent);
+background:var(--surface-2); color:#555166; font-size:.8rem; line-height:1.45; }
+.li-guidance strong { display:block; margin-bottom:.15rem; color:var(--text); font-size:.7rem;
+text-transform:uppercase; letter-spacing:.04em; }
+.li-ev { margin-top:.4rem; color:var(--muted); font-size:.72rem; }
+.li-note { margin-top:.4rem; color:var(--muted); font-size:.78rem; font-style:italic; }
+/* linkedin-mimicking mini mock (moderately realistic) */
+.lim { background:#fff; border:1px solid #d6d3cc; border-radius:8px; overflow:hidden;
+font-family:-apple-system,'Segoe UI',sans-serif; font-size:.83rem; color:#1c1c1c; }
+.lim-cover { height:44px; background:linear-gradient(120deg,#a9bcc0,#dce8ea); }
+.lim-id { padding:0 .9rem .8rem; }
+.lim-avatar { width:56px; height:56px; border-radius:50%; background:#0a66c2; color:#fff;
+display:flex; align-items:center; justify-content:center; font-weight:700; font-size:1.05rem;
+border:3px solid #fff; margin-top:-28px; }
+.lim-name { font-weight:700; font-size:.98rem; margin-top:.35rem; }
+.lim-headline { font-size:.84rem; line-height:1.4; margin-top:.12rem; white-space:pre-wrap; }
+.lim-loc { color:#666; font-size:.76rem; margin-top:.28rem; }
+.lim-link { color:#0a66c2; font-weight:600; }
+.lim-sec-title { font-weight:700; font-size:.9rem; padding:.65rem .9rem .15rem; }
+.lim-body { padding:.3rem .9rem .75rem; white-space:pre-wrap; line-height:1.45; color:#333; }
+.lim-item { display:flex; gap:.6rem; padding:.55rem .9rem; }
+.lim-item + .lim-item { border-top:1px solid #ebe9e4; }
+.lim-logo { width:36px; height:36px; border-radius:4px; background:#e9e7e1; color:#56524a;
+display:flex; align-items:center; justify-content:center; font-weight:700; flex:0 0 36px; }
+.lim-role { font-weight:600; font-size:.85rem; }
+.lim-org { color:#444; font-size:.78rem; }
+.lim-dates { color:#666; font-size:.74rem; }
+.lim-bullets { margin:.3rem 0 0 1rem; font-size:.78rem; color:#333; }
+.lim-bullets li { margin:.15rem 0; }
+.lim-pills { display:flex; flex-wrap:wrap; gap:.35rem; padding:.45rem .9rem .8rem; }
+.lim-pill { border:1px solid #0a66c2; color:#0a66c2; border-radius:999px; padding:.18em .75em;
+font-size:.76rem; font-weight:600; }
+.lim-pill.top { background:#0a66c2; color:#fff; }
+.lim-pill-label { flex-basis:100%; color:#666; font-size:.7rem; margin-top:.15rem; }
+.lim-cards { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; padding:.45rem .9rem .8rem; }
+.lim-card { border:1px solid #ebe9e4; border-radius:6px; padding:.5rem .6rem; font-size:.78rem;
+color:#333; line-height:1.4; background:#fbfaf8; }
+.lim-post { padding:.6rem .9rem; }
+.lim-post + .lim-post { border-top:1px solid #ebe9e4; }
+.lim-post-head { display:flex; gap:.5rem; align-items:center; margin-bottom:.35rem; }
+.lim-avatar-s { width:30px; height:30px; border-radius:50%; background:#0a66c2; color:#fff;
+display:flex; align-items:center; justify-content:center; font-size:.68rem; font-weight:700;
+flex:0 0 30px; }
+.lim-post-name { font-weight:600; font-size:.78rem; }
+.lim-post-sub { color:#666; font-size:.68rem; }
+.lim-post-body { font-size:.8rem; line-height:1.42; color:#222; white-space:pre-wrap; }
+.lim-empty { color:#8b877e; font-style:italic; padding:.8rem .9rem; font-size:.8rem; }
+.lim.lim-empty-state { border-style:dashed; background:#fbfaf8; }
+.interview-prep { background:#fff; border:1px solid var(--border); border-radius:8px;
+padding:1.4rem 1.6rem; max-width:880px; line-height:1.58; }
+.interview-prep h1 { font-size:1.25rem; margin:0 0 .7rem; }
+.interview-prep h2 { font-size:.98rem; margin:1.25rem 0 .45rem; border-bottom:1px solid var(--border);
+padding-bottom:.25rem; color:var(--text); }
+.focus-btn{background:none;border:none;cursor:pointer;font-size:1rem;color:#999;padding:0 .2rem}
+.focus-btn.on{color:#e6a817}
+.focused-row td{background:rgba(230,168,23,.07)}
+/* interview: every section renders as a table; story refs are interactive */
+.interview-prep table { border-collapse:collapse; width:100%; margin:.5rem 0 1rem; font-size:.86rem; }
+.interview-prep th,.interview-prep td { border:1px solid var(--border); padding:.35rem .5rem;
+  text-align:left; vertical-align:top; }
+.interview-prep th { background:var(--surface); font-weight:600; }
+.story-ref { color:var(--accent-hover,#2b6cb0); cursor:pointer; text-decoration:underline dotted;
+  font-weight:600; white-space:nowrap; }
+.story-pop { position:fixed; z-index:9999; max-width:420px; background:#fff; border:1.5px solid var(--navy,#243b53);
+  border-radius:8px; padding:.6rem .75rem; font-size:.8rem; line-height:1.45; display:none; }
+.story-pop b { color:var(--text); }
+.story-pop .sp-t { font-weight:600; margin-bottom:.3rem; }
+.story-bank-wrap { margin-top:1.5rem; }
+.story-bank-wrap h2 { font-size:1.02rem; margin:0 0 .2rem; border-bottom:2px solid var(--border);
+  padding-bottom:.3rem; }
+.story-bank-table td.sb-edit { width:64px; white-space:nowrap; }
+.story-bank-table tr.editing { background:rgba(43,108,176,.06); }
+.sb-icon { background:none; border:none; cursor:pointer; color:#888; font-size:.9rem; padding:0 .2rem; }
+.sb-icon:hover { color:var(--accent-hover,#2b6cb0); }
+.sb-btn { font-size:.72rem; padding:.15em .5em; margin-right:.25rem; cursor:pointer;
+  border:1px solid var(--border); border-radius:6px; background:#fff; }
+.sb-btn.save { background:var(--accent,#2b6cb0); color:#fff; border-color:var(--accent,#2b6cb0); }
+.story-bank-table textarea { width:100%; min-height:3.2em; font:inherit; font-size:.82rem;
+  border:1px solid var(--accent,#2b6cb0); border-radius:5px; padding:.25rem; resize:vertical; box-sizing:border-box; }
+.story-bank-table td.hl-target { background:rgba(230,168,23,.16); transition:background 1s; }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo" onclick="nav('#/projects')">RoleNavi</span>
+  <nav>
+    <a href="#/projects" id="nav-projects">Projects</a>
+    <a href="#/profile" id="nav-profile">Profile</a>
+  </nav>
+  <span class="badge" id="backend">…</span>
+  <span class="right">local files · disclosed model processing</span>
+</header>
+<main id="view"></main>
+
+<div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
+
+<script>
+/* ---------------- state ---------------- */
+const SESSION_TOKEN = '__ROLENAVI_SESSION_TOKEN__';
+let S = {persons:[], projects:[], workflows:[], workflow_data_use:{}, backend:'mock', active_run:null, profile_runs:{}};
+let P = null, tab = 'inbox', wfSel = 'search';
+let archMode = false, archSel = new Set();
+let currentRid = null, seen = 0, poller = null;
+let prepLiveRevision = '', prepRefreshBusy = false;
+let profilePoller = null;
+let universePoller = null, universeSeen = 0, universeProject = '';
+let profileRemoved = new Set();
+const PROJECT_WORKFLOW_HIDDEN = new Set(['profile-intake','opportunity-plan']);
+let modalLocked = false;
+let tableState = {
+  list: {sort:'score', dir:'desc', filters:{location:'', group:'', priority:''}},
+  tracker: {sort:'last_updated', dir:'desc', filters:{status:'', group:''}},
+};
+let prepState = {kind:'strategy', selected:{}, cache:{}};
+const TRACKER_STATUS_OPTIONS = [
+  ['to_apply', 'to apply'], ['applied', 'applied'],
+  ['to_interview_1', 'interview 1'], ['to_interview_2', 'interview 2'],
+  ['to_interview_3', 'interview 3'], ['offer', 'offer'],
+  ['accepted', 'accepted'], ['rejected', 'rejected'],
+  ['withdrawn', 'dropped'], ['paused', 'paused'],
+];
+const TRACKER_TRANSITIONS = {
+  to_apply: ['applied', 'rejected', 'withdrawn', 'paused'],
+  applied: ['to_interview_1', 'rejected', 'withdrawn', 'paused'],
+  to_interview_1: ['to_interview_2', 'rejected', 'withdrawn', 'paused'],
+  to_interview_2: ['to_interview_3', 'offer', 'rejected', 'withdrawn', 'paused'],
+  to_interview_3: ['offer', 'rejected', 'withdrawn', 'paused'],
+  offer: ['accepted', 'rejected', 'withdrawn'],
+  paused: ['to_apply', 'applied', 'to_interview_1', 'to_interview_2', 'to_interview_3', 'withdrawn'],
+  accepted: [], rejected: [], withdrawn: [],
+};
+
+const $ = id => document.getElementById(id);
+const esc = s => { const d=document.createElement('span'); d.textContent=s??''; return d.innerHTML; };
+const attr = s => String(s??'')
+  .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+  .replace(/</g,'&lt;').replace(/>/g,'&gt;');
+async function secureFetch(path, opts={}){
+  const headers = new Headers(opts.headers || {});
+  headers.set('X-RoleNavi-Token', SESSION_TOKEN);
+  return fetch(path, Object.assign({cache:'no-store'}, opts, {headers}));
+}
+async function api(path, opts){ const r = await secureFetch(path, opts); return r.json(); }
+async function post(path, obj){ return api(path,{method:'POST',
+  headers:{'Content-Type':'application/json'}, body:JSON.stringify(obj)}); }
+function updateBackendBadge(){
+  const b=$('backend'); if (b){ b.textContent=S.backend; b.className='badge'+(S.backend==='mock'?' mock':''); }
+}
+
+/* tiny markdown renderer (headings, lists, bold/italic/code, links, quotes, tables, hr) */
+function mdToHtml(md){
+  const lines = (md||'').split('\n'); let out=[], inUl=false, inOl=false, inTbl=false;
+  const close=()=>{ if(inUl){out.push('</ul>');inUl=false;} if(inOl){out.push('</ol>');inOl=false;}
+                    if(inTbl){out.push('</table>');inTbl=false;} };
+  const inline = t => esc(t)
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g,'$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  for (let raw of lines){
+    const l = raw.replace(/\s+$/,'');
+    if (/^\s*\|.*\|\s*$/.test(l)){
+      if (/^\s*\|[\s\-:|]+\|\s*$/.test(l)) continue;               // separator row
+      const cells = l.trim().replace(/^\||\|$/g,'').split('|');
+      if (!inTbl){ close(); out.push('<table>'); inTbl=true;
+        out.push('<tr>'+cells.map(c=>`<th>${inline(c.trim())}</th>`).join('')+'</tr>'); }
+      else out.push('<tr>'+cells.map(c=>`<td>${inline(c.trim())}</td>`).join('')+'</tr>');
+      continue;
+    }
+    if (inTbl){ out.push('</table>'); inTbl=false; }
+    let m;
+    if ((m=l.match(/^(#{1,4})\s+(.*)/))){ close(); out.push(`<h${m[1].length+1}>${inline(m[2])}</h${m[1].length+1}>`); }
+    else if (/^\s*[-*]\s+/.test(l)){ if(!inUl){close(); out.push('<ul>'); inUl=true;}
+      out.push('<li>'+inline(l.replace(/^\s*[-*]\s+/,''))+'</li>'); }
+    else if (/^\s*\d+[.)]\s+/.test(l)){ if(!inOl){close(); out.push('<ol>'); inOl=true;}
+      out.push('<li>'+inline(l.replace(/^\s*\d+[.)]\s+/,''))+'</li>'); }
+    else if (/^>\s?/.test(l)){ close(); out.push('<blockquote>'+inline(l.replace(/^>\s?/,''))+'</blockquote>'); }
+    else if (/^(-{3,}|\*{3,})$/.test(l.trim())){ close(); out.push('<hr>'); }
+    else if (!l.trim()){ close(); }
+    else { close(); out.push('<p>'+inline(l)+'</p>'); }
+  }
+  close(); return out.join('\n');
+}
+
+async function refresh(){
+  S = await api('/api/state');
+  updateBackendBadge();
+  route();
+}
+
+/* ---------------- routing ---------------- */
+function nav(h){ location.hash = h; }
+window.addEventListener('hashchange', route);
+function route(){
+  const h = location.hash || '#/projects';
+  $('nav-projects').className = h.startsWith('#/project') ? 'on' : '';
+  $('nav-profile').className = h==='#/profile' ? 'on' : '';
+  if (h==='#/profile') return renderProfile();
+  const m = h.match(/^#\/project\/(.+)$/);
+  if (m) return openProject(decodeURIComponent(m[1]));
+  renderProjects();
+}
+
+/* ---------------- projects list ---------------- */
+function renderProjects(){
+  stopPolling();
+  stopProfilePolling();
+  stopUniversePolling();
+  $('view').className = '';
+  const act = S.projects.filter(p=>!p.archived), arch = S.projects.filter(p=>p.archived);
+  const archBtnLabel = !archMode ? 'Archive' : (archSel.size ? `Archive all ${archSel.size}` : 'Cancel');
+  let cards = act.map(p=>`
+    <div class="pcard" onclick="${archMode?`toggleSel(event,'${p.code}')`:`nav('#/project/${p.code}')`}">
+      ${archMode?`<input type="checkbox" ${archSel.has(p.code)?'checked':''}
+        onclick="toggleSel(event,'${p.code}')">`:''}
+      <div class="t">${esc(p.focus)}</div>
+      <div class="meta">${esc(p.person)}${p.targets_summary?' · '+esc(p.targets_summary):''}</div>
+      <div class="counts">${p.n_jobs} jobs · ${p.n_tracked} tracked
+        <span class="muted">· updated ${esc(p.updated_at||p.created_at)}</span></div>
+    </div>`).join('');
+  cards += `<div class="pcard newcard" onclick="openCreateProject()">
+      <span class="plus">＋</span><span>New project</span></div>`;
+  $('view').innerHTML = `
+    <div class="topbar">
+      <h1>Projects</h1><span class="spacer"></span>
+      <button onclick="toggleArchMode()">${archBtnLabel}</button>
+      <button class="primary" onclick="openCreateProject()">Create project</button>
+    </div>
+    <div class="grid">${cards}</div>
+    ${arch.length?`<h2>Archived (${arch.length})</h2><div class="muted">`+
+      arch.map(p=>`${esc(p.code)} <a href="#" onclick="unarchive('${p.code}');return false">restore</a>`)
+      .join(' · ')+`</div>`:''}`;
+}
+function toggleSel(ev,code){ ev.stopPropagation();
+  archSel.has(code)?archSel.delete(code):archSel.add(code); renderProjects(); }
+async function toggleArchMode(){
+  if (!archMode){ archMode=true; archSel.clear(); renderProjects(); return; }
+  if (!archSel.size){ archMode=false; renderProjects(); return; }
+  await post('/api/projects/archive', {codes:[...archSel], archived:true});
+  archMode=false; archSel.clear(); refresh();
+}
+async function unarchive(code){ await post('/api/projects/archive',{codes:[code],archived:false}); refresh(); }
+
+function openCreateProject(){
+  const persons = S.persons.map(p=>`<option value="${p.person}">${esc(p.name||p.person)}</option>`).join('');
+  showModal(`
+    <h1>Create project</h1>
+    ${S.persons.length?'':'<p class="muted">No profile yet — create one in the Profile tab first.</p>'}
+    <label>person <span class="req">*</span></label><select id="cp_person">${persons}</select>
+    <label>focus slug <span class="req">*</span> <span class="muted">(e.g. ai-product)</span></label>
+    <input type="text" id="cp_focus">
+    <label>target locations <span class="req">*</span> <span class="muted">(comma-separated — grounds every search)</span></label>
+    <input type="text" id="cp_loc" placeholder="San Francisco, Remote-US">
+    <label>focus role</label><input type="text" id="cp_role" placeholder="AI product manager">
+    <label>target level</label><input type="text" id="cp_level" placeholder="senior / staff / director">
+    <label>target companies <span class="muted">(seeds — similar companies get explored too)</span></label>
+    <input type="text" id="cp_companies" placeholder="OpenAI, Stripe, Airbnb">
+    <label>target comp range <span class="muted">(search preference; may be used by the model)</span></label>
+    <input type="text" id="cp_comp" placeholder="$250-350K">
+    <label>negatives <span class="muted">(exclude companies/titles/industries)</span></label>
+    <input type="text" id="cp_neg" placeholder="gaming, >50% ops work">
+    <div style="margin-top:1rem; display:flex; gap:.5rem">
+      <button class="primary" id="cp_submit" onclick="createProject()">Create</button>
+      <button id="cp_cancel" onclick="hideModal()">Cancel</button>
+    </div><p class="muted" id="cp_err" style="margin-top:.5rem"></p>`);
+}
+async function createProject(){
+  const submit=$('cp_submit'), cancel=$('cp_cancel');
+  submit.disabled=true; cancel.disabled=true; modalLocked=true;
+  submit.innerHTML=`Saving project ${animatedDots()}`;
+  $('cp_err').textContent='Saving explicit targets; employer expansion will continue in background…';
+  const res = await post('/api/projects', {
+    person: $('cp_person').value, focus: $('cp_focus').value.trim(),
+    target_locations: $('cp_loc').value, focus_role: $('cp_role').value,
+    target_level: $('cp_level').value, target_companies: $('cp_companies').value,
+    comp_range: $('cp_comp').value, negatives: $('cp_neg').value});
+  if (res.error){ $('cp_err').textContent = res.error; submit.disabled=false;
+    cancel.disabled=false; modalLocked=false; submit.textContent='Create'; return; }
+  modalLocked=false;
+  hideModal(); await refresh(); nav('#/project/'+res.code);
+}
+
+/* ---------------- profile ---------------- */
+function profileRunStatus(person){
+  return ((S.profile_runs || {})[person]) || null;
+}
+function animatedDots(cls='inline-dots'){
+  return `<span class="${cls}"><span></span><span></span><span></span></span>`;
+}
+function renderProfileRunStatus(){
+  const p = currentPerson();
+  const el = $('pf_run_status');
+  const rebuild = $('pf_rebuild'), save = $('pf_save'), resync = $('pf_resync');
+  if (!el) return;
+  if (!p){
+    if (rebuild) rebuild.disabled = true;
+    if (resync) resync.disabled = true;
+    el.textContent = 'New profile — resume and LinkedIn can be added before the first save.';
+    return;
+  }
+  const st = profileRunStatus(p.person);
+  const running = !!st && st.status === 'running';
+  if (save) save.disabled = running;
+  if (rebuild){ rebuild.disabled = running; rebuild.textContent = 'Rebuild artifacts'; }
+  if (resync) resync.disabled = running || !p.linkedin_url;
+  if (!st){
+    el.textContent = p.profile_current ? 'Candidate profile is current.' :
+      (p.has_profile ? 'Candidate profile is stale; Save Profile to reconcile sources.' :
+        'Candidate profile has not been built yet.');
+  } else if (running){
+    el.innerHTML = `Updating profile artifacts ${animatedDots()}`;
+  } else {
+    el.textContent = st.summary ? `${st.status}: ${st.summary}` : `profile-intake ${st.status}`;
+  }
+}
+async function refreshProfileRunState(){
+  S = await api('/api/state');
+  updateBackendBadge();
+  renderProfileRunStatus();
+}
+function startProfilePolling(){
+  stopProfilePolling();
+  profilePoller = setInterval(async ()=>{
+    if ((location.hash || '') !== '#/profile'){ stopProfilePolling(); return; }
+    await refreshProfileRunState();
+  }, 2000);
+}
+function stopProfilePolling(){
+  if (profilePoller){ clearInterval(profilePoller); profilePoller=null; }
+}
+function renderProfile(){
+  stopPolling();
+  stopUniversePolling();
+  startProfilePolling();
+  $('view').className = '';
+  const opts = S.persons.map(p=>`<option value="${p.person}">${esc(p.name||p.person)} (${p.person})</option>`).join('')
+    + `<option value="__new__">+ new person…</option>`;
+  $('view').innerHTML = `
+    <div class="topbar"><h1>Profile</h1></div>
+    <div class="card" style="max-width:920px;margin:0 auto">
+        <p class="muted" style="margin-top:0">Commit identity, resume/materials, LinkedIn URL, and standing
+        instructions together. Profile artifacts are regenerated only when their source content changes.</p>
+        <label>person</label><select id="pf_sel" onchange="fillProfile()">${opts}</select>
+        <span id="pf_newwrap" style="display:none"><label>person code <span class="req">*</span>
+        <span class="muted">(lowercase slug)</span></label><input type="text" id="pf_code"></span>
+        <label>display name <span class="req">*</span></label><input type="text" id="pf_name">
+        <label>LinkedIn URL <span class="muted">(optional)</span></label>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <input type="text" id="pf_li" placeholder="linkedin.com/in/you" style="flex:1">
+          <button id="pf_resync" type="button" onclick="resyncLinkedIn()">Resync LinkedIn profile</button>
+        </div>
+        <p class="muted" style="margin:.3rem 0 0">A changed URL is captured on Save. If the URL is unchanged but
+        LinkedIn content changed, use Resync LinkedIn profile.</p>
+
+        <h2>Resume &amp; materials</h2>
+        <div id="pf_files" class="filelist muted">…</div>
+        <label style="margin-top:.8rem">add or replace files (pdf / docx / md / txt / html)</label>
+        <input type="file" id="pf_upload" multiple onchange="renderProfileMaterials()">
+        <p class="muted" id="pf_upmsg">Files are written only when Save Profile is pressed.</p>
+
+        <label>standing instructions <span class="muted">(injected into every run — tone,
+        priorities, constraints; approval boundaries always win)</span></label>
+        <textarea id="pf_inst" placeholder="e.g. Prefer companies with strong AI teams. Never consider relocation. Write in concise English."></textarea>
+        <div style="margin-top:.9rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap">
+        <button class="primary" id="pf_save" onclick="saveProfile()">Save Profile</button>
+        <button id="pf_rebuild" onclick="rebuildProfile()">Rebuild artifacts</button>
+        <span class="muted" id="pf_msg"></span></div>
+        <div id="pf_run_status" class="profile-run-status"></div>
+    </div>`;
+  fillProfile();
+}
+function currentPerson(){ const v=$('pf_sel').value; return v==='__new__'?null:S.persons.find(p=>p.person===v); }
+function fillProfile(){
+  const p = currentPerson();
+  profileRemoved = new Set();
+  $('pf_newwrap').style.display = p?'none':'inline';
+  $('pf_name').value = p?(p.name||''):'';
+  $('pf_li').value = p?(p.linkedin_url||''):'';
+  $('pf_inst').value = p?(p.instructions||''):'';
+  if ($('pf_upload')) $('pf_upload').value = '';
+  renderProfileMaterials();
+  renderProfileRunStatus();
+}
+function renderProfileMaterials(){
+  const p = currentPerson();
+  const existing = p && p.materials ? p.materials : [];
+  const chosen = $('pf_upload') ? Array.from($('pf_upload').files || []) : [];
+  const rows = existing.map(f=>`<div class="matrow"><span class="${profileRemoved.has(f.name)?'muted':''}">
+      ${esc(f.name)} <span class="muted">(${(f.size/1024).toFixed(0)} KB${profileRemoved.has(f.name)?' · remove on save':''})</span></span>
+      <button type="button" class="mini ${profileRemoved.has(f.name)?'':'deny'}" data-name="${attr(f.name)}"
+        onclick="toggleProfileMaterial(this.dataset.name)">${profileRemoved.has(f.name)?'Keep':'Remove'}</button></div>`);
+  rows.push(...chosen.map(f=>`<div class="matrow"><span>${esc(f.name)}
+      <span class="muted">(${(f.size/1024).toFixed(0)} KB · add on save)</span></span></div>`));
+  $('pf_files').innerHTML = rows.length ? rows.join('') : '<span class="muted">no materials selected</span>';
+}
+function toggleProfileMaterial(name){
+  if (profileRemoved.has(name)) profileRemoved.delete(name); else profileRemoved.add(name);
+  renderProfileMaterials();
+}
+async function waitForProfileIntake(person){
+  while(true){
+    await new Promise(resolve=>setTimeout(resolve,1000));
+    S=await api('/api/state');
+    const st=profileRunStatus(person);
+    renderProfileRunStatus();
+    if (!st || st.status!=='running') return st;
+  }
+}
+async function saveProfile(){
+  const p = currentPerson();
+  const person = p ? p.person : $('pf_code').value.trim();
+  const btn=$('pf_save'); btn.disabled=true;
+  btn.innerHTML=`Updating profile ${animatedDots()}`;
+  const fd = new FormData();
+  fd.append('person', person); fd.append('name', $('pf_name').value);
+  fd.append('linkedin_url', $('pf_li').value); fd.append('instructions', $('pf_inst').value);
+  fd.append('remove_materials', JSON.stringify([...profileRemoved]));
+  for (const f of Array.from($('pf_upload').files || [])) fd.append('file-'+f.name, f, f.name);
+  let res;
+  try {
+    const response = await secureFetch('/api/profile/save', {method:'POST', body:fd});
+    res = await response.json();
+  } catch (e) { res = {error:String(e)}; }
+  if (res.error){ $('pf_msg').textContent = res.error; btn.disabled=false;
+    btn.textContent='Save Profile'; return; }
+  S=await api('/api/state');
+  const intakeActive = !!profileRunStatus(person) && profileRunStatus(person).status==='running';
+  const waitedForIntake = res.profile_intake_started || intakeActive;
+  let finalStatus = profileRunStatus(person);
+  if (waitedForIntake){
+    $('pf_msg').innerHTML=`updating profile ${animatedDots()}`;
+    finalStatus = await waitForProfileIntake(person);
+  }
+  await refresh(); $('pf_sel').value = person; fillProfile();
+  const fresh=$('pf_save'); if(fresh){ fresh.disabled=false; fresh.textContent='Save Profile'; }
+  $('pf_msg').textContent = waitedForIntake
+    ? (finalStatus && finalStatus.status==='done'
+      ? ' profile updated'
+      : `${(finalStatus&&finalStatus.status)||'failed'}: ${(finalStatus&&finalStatus.summary)||'profile artifacts were not built'}`)
+    : (res.skipped_duplicate_files && res.skipped_duplicate_files.length
+      ? ` saved; duplicate file content skipped (${res.skipped_duplicate_files.join(', ')})`
+      : ' saved; no source changes, so no model call was needed');
+}
+async function resyncLinkedIn(){
+  const p = currentPerson();
+  if (!p){ $('pf_msg').textContent='Save Profile before resyncing LinkedIn.'; return; }
+  if (($('pf_li').value||'').trim() !== (p.linkedin_url||'')){
+    $('pf_msg').textContent='The LinkedIn URL has unsaved changes. Save Profile first.'; return;
+  }
+  const btn=$('pf_resync'); btn.disabled=true; btn.innerHTML=`Resyncing ${animatedDots()}`;
+  const res=await post('/api/profile/linkedin/resync',{person:p.person});
+  if (res.error){ $('pf_msg').textContent=res.error; btn.disabled=false;
+    btn.textContent='Resync LinkedIn profile'; return; }
+  $('pf_msg').innerHTML=`capturing LinkedIn and reconciling profile ${animatedDots()}`;
+  const finalStatus=await waitForProfileIntake(p.person);
+  await refresh(); $('pf_sel').value=p.person; fillProfile();
+  $('pf_msg').textContent = finalStatus && finalStatus.status==='done'
+    ? (finalStatus.summary || 'LinkedIn profile resynced.')
+    : `${(finalStatus&&finalStatus.status)||'failed'}: ${(finalStatus&&finalStatus.summary)||'LinkedIn resync failed'}`;
+}
+async function rebuildProfile(){
+  const p = currentPerson();
+  if (!p){ $('pf_msg').textContent = 'save the person first'; return; }
+  const btn = $('pf_rebuild');
+  if (btn) btn.disabled = true;
+  const res = await post('/api/profile/intake', {person:p.person});
+  $('pf_msg').textContent = res.error ? res.error :
+    (res.profile_intake_started ? ' profile rebuild started' : ' profile rebuild already running');
+  await refreshProfileRunState();
+}
+
+/* ---------------- workspace ---------------- */
+async function openProject(code){
+  if (universeProject && universeProject !== code) stopUniversePolling();
+  if (!P || P.code !== code) prepState.cache = {};   // fresh artifacts per project entry
+  P = await api('/api/project/'+code);
+  if (P.error){ $('view').innerHTML = `<p class="muted">${esc(P.error)}</p>`; return; }
+  renderWorkspace();
+  await loadChatHistory();
+  if (P.active_run) attach(P.active_run, false);
+  startUniversePolling();
+}
+function universeBadgeMarkup(){
+  const state=P?.universe_status||{};
+  const run=P?.universe_run||{};
+  if (run.status==='running'){
+    return {cls:'badge mock', html:`Building search universe ${animatedDots()}`};
+  }
+  if (!state.ready){
+    const prefix=['failed','blocked','partial'].includes(run.status)
+      ? 'Search universe blocked' : 'Search universe';
+    return {cls:'badge mock', html:`${esc(prefix+': '+(state.reason||'not ready'))}`};
+  }
+  if (state.state==='expanding'){
+    return {cls:'badge', html:'Search targets ready · expanding employer coverage'};
+  }
+  return {cls:'badge', html:'Search universe ready'};
+}
+function updateUniverseChrome(){
+  const badge=$('universeBadge');
+  if (badge){ const value=universeBadgeMarkup(); badge.className=value.cls; badge.innerHTML=value.html; }
+  setRunButton();
+}
+function prepBadgeMarkup(){
+  const progress=P?.prep_progress||{};
+  const phase=String(progress.current_phase||'').replace('-', ' ');
+  const state=String(progress.state||'');
+  if (!phase) return {show:false, cls:'badge mock', html:''};
+  const live=state==='running';
+  const failed=['failed','partial','blocked'].includes(state);
+  return {show:true, cls:failed?'badge mock':'badge',
+    html:`Prep · ${esc(phase)} · ${esc(live?'running':state||'ready')}${live?' '+animatedDots():''}`};
+}
+function updatePrepChrome(){
+  const badge=$('prepStatusBadge'); if(!badge)return;
+  const value=prepBadgeMarkup();
+  badge.style.display=value.show?'inline-flex':'none';
+  badge.className=value.cls; badge.innerHTML=value.html;
+}
+function renderWorkspace(){
+  stopProfilePolling();
+  $('view').className = 'workspace-view';
+  const t = (n,l) => `<button class="${tab===n?'on':''}" data-tab="${n}" onclick="tab='${n}';renderTab()">${l}</button>`;
+  $('view').innerHTML = `
+    <div class="workspace-shell">
+      <section class="project-main">
+        <div class="project-toolbar">
+          <h1>${esc(P.focus)} <span class="muted" style="font-size:.8rem">${esc(P.code)}</span></h1>
+          <span id="universeBadge" class="${universeBadgeMarkup().cls}">${universeBadgeMarkup().html}</span>
+          <span id="prepStatusBadge" style="display:none"></span>
+          <span class="spacer"></span>
+          <button class="pref" onclick="openTargets()">Preference</button>
+        </div>
+        <div class="tabs">${t('inbox','Inbox')}${t('list','Jobs')}${t('prep','Prep')}${t('tracker','Applications')}</div>
+        <div id="tabBody" class="tab-body"></div>
+      </section>
+      <div class="agent">
+        <div class="ahead"><span class="dot" id="adot"></span> agent session
+          <span style="margin-left:auto">${esc(S.backend)}</span></div>
+        <div class="afeed" id="log"></div>
+        <div class="acompose">
+          <div id="approvalDock"></div>
+          <div class="chips" id="wfchips"></div>
+          <div class="row">
+            <input type="text" id="task" placeholder="task focus (optional) — Enter to run"
+              onkeydown="if(event.key==='Enter')startRun()">
+            <button class="send" id="sendbtn" onclick="startRun()">Run ▸</button>
+          </div>
+          <div class="muted" id="runlist" style="margin-top:.4rem; font-size:.7rem"></div>
+          <div class="muted" id="datause" style="margin-top:.35rem; font-size:.68rem"></div>
+        </div>
+      </div>
+    </div>`;
+  const wf = $('wfchips');
+  // Canonical command order for the chat chips (unknown workflows fall to the end).
+  const WF_ORDER = ['search','score','prep','prep-strategy','prep-resume',
+                    'prep-linkedin','story-bank','prep-interview','apply','followup'];
+  const wfRank = w => { const i = WF_ORDER.indexOf(w); return i < 0 ? WF_ORDER.length : i; };
+  if (PROJECT_WORKFLOW_HIDDEN.has(wfSel)) wfSel = 'search';
+  const orderedWf = [...(S.workflows||[])]
+    .filter(w=>!PROJECT_WORKFLOW_HIDDEN.has(w))
+    .sort((a,b)=> wfRank(a)-wfRank(b) || a.localeCompare(b));
+  for (const w of orderedWf){
+    const b=document.createElement('button');
+    b.textContent=w; b.className = w===wfSel?'sel':'';
+    b.onclick=()=>selectWorkflow(w);
+    wf.appendChild(b);
+  }
+  renderRunList();
+  renderDataUse();
+  updatePrepChrome();
+  renderTab();
+}
+function selectWorkflow(w){
+  wfSel=w;
+  document.querySelectorAll('#wfchips button').forEach(b=>b.className = b.textContent===wfSel?'sel':'');
+  renderDataUse();
+  setRunButton();
+}
+function renderDataUse(){
+  const el=$('datause'); if(el) el.textContent='Data used: '+(S.workflow_data_use?.[wfSel]||'public facts only');
+}
+function renderRunList(){
+  setRunButton();
+  if (!$('runlist') || !P) return;
+  const recent = P.runs.length
+    ? 'recent: '+P.runs.map(r=>`<a href="#" onclick="attach('${r.rid}', false);return false">${r.workflow}·${r.status}</a>`).join(' | ')
+    : '';
+  const cp = P.score_checkpoint || {};
+  const checkpoint = cp.checkpoint_key
+    ? `score checkpoint: ${cp.validated_jobs||0}/${cp.total_jobs||0} validated${cp.invalid_jobs?`, ${cp.invalid_jobs} invalid`:''} · ${esc(cp.status||'')}`
+    : '';
+  $('runlist').innerHTML = [recent,checkpoint].filter(Boolean).join('<br>');
+}
+function activeRid(){
+  return currentRid || (P && P.active_run) || null;
+}
+function setRunButton(){
+  const btn = $('sendbtn'); if (!btn) return;
+  const rid = activeRid();
+  if (rid){                              // this project's agent is running → stop control
+    btn.innerHTML = '<span class="stop-ico">■</span>';
+    btn.title = 'stop the running agent';
+    btn.className = 'send stop';
+    btn.disabled = false;
+    btn.onclick = () => stopRun(rid);
+  } else {
+    btn.textContent = 'Run ▸';
+    btn.title = '';
+    btn.className = 'send';
+    const universeBuilding = P?.universe_run?.status === 'running';
+    const universeBlocked = wfSel==='search' && P?.universe_status && !P.universe_status.ready;
+    btn.disabled = !!S.active_run || universeBuilding || universeBlocked;
+    if (universeBuilding){
+      btn.title = 'Building the target-employer universe; Run unlocks automatically when ready.';
+    } else if (universeBlocked){
+      btn.title = P.universe_status.reason;
+    }
+    btn.onclick = startRun;
+  }
+}
+async function stopRun(rid){
+  const btn = $('sendbtn');
+  if (btn){ btn.disabled = true; btn.textContent = '…'; }  // cancel in flight
+  const res = await post(`/api/runs/${rid}/cancel`, {});
+  if (res && res.ok === false) setRunButton();   // nothing to cancel — restore
+}
+async function toggleFocus(jobId, focused){
+  const scroll = captureTableScroll('list');
+  const res = await post(`/api/project/${P.code}/job-focus`, {job_id: jobId, focused});
+  if (res.error){ addMsg('error', deviceTs(), res.error); return; }
+  const row = P.jobs.find(r=>String(r.job_id)===String(jobId));
+  if (row) row.focused = !!res.focused;
+  renderTab();
+  restoreTableScroll('list', scroll);
+}
+async function updateTrackerStatus(sel){
+  const prev = sel.dataset.prev || '';
+  sel.disabled = true;
+  const res = await post(`/api/project/${P.code}/tracker/status`, {
+    application_id: sel.dataset.applicationId, status: sel.value});
+  if (res.error){
+    sel.value = prev;
+    sel.disabled = false;
+    addMsg('error', deviceTs(), res.error);
+    return;
+  }
+  P = res.project || await api('/api/project/'+P.code);
+  renderRunList();
+  renderTab();
+}
+function jobLink(r){
+  const url = r.job_page_url || r.source_url;
+  return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title);
+}
+function slugify(s){
+  return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+}
+function trackerJob(r){
+  return (P.jobs || []).find(j=>j.job_id===r.job_id) || {};
+}
+function applicationJobLink(r){
+  return jobLink(Object.assign({}, trackerJob(r), r));
+}
+function jsArg(s){
+  return attr(JSON.stringify(String(s||'')));
+}
+function applicationPathHint(r){
+  const text = [r.next_action, r.notes].filter(Boolean).join(' ');
+  const m = text.match(/applications\/[^\s"',;()]+\/(?:application-instructions|application-strategy)\.md/);
+  return m ? m[0] : '';
+}
+function findApplicationArtifact(r){
+  const items = (P.prep || []).filter(a=>a.kind==='application');
+  const hint = applicationPathHint(r);
+  if (hint){
+    const exact = items.find(a=>a.path===hint);
+    if (exact) return exact;
+  }
+  const candidates = new Set([
+    slugify(r.company),
+    slugify(`${r.company} ${r.title}`),
+    slugify((r.job_id||'').split('--')[0]),
+    slugify((r.application_id||'').replace(/^app--/,'').split('--')[0]),
+  ].filter(Boolean));
+  return items.find(a=>candidates.has(slugify(a.target)) ||
+    candidates.has(slugify(a.label)) || candidates.has(slugify(a.path.split('/')[1])));
+}
+function applicationActionButton(r){
+  const item = findApplicationArtifact(r);
+  if (!item) return `<button class="icon-btn application-action-btn" disabled
+    title="No application packet" aria-label="No application packet">-&gt;</button>`;
+  return `<button class="icon-btn application-action-btn" title="Open application packet"
+    aria-label="Open application packet"
+    onclick='openApplicationArtifact(${jsArg(item.path)}); event.stopPropagation();'>-&gt;</button>`;
+}
+function nextActionCell(r){
+  return `<div class="next-action-cell"><span>${esc(r.next_action)}</span>${applicationActionButton(r)}</div>`;
+}
+function statusPill(s){
+  const v = s || 'unknown';
+  return `<span class="status-pill ${esc(v)}">${esc(statusLabel(v))}</span>`;
+}
+function statusLabel(v){
+  const hit = TRACKER_STATUS_OPTIONS.find(([value])=>value===v);
+  return hit ? hit[1] : v;
+}
+function trackerStatusSelect(r){
+  const current = r.status || 'to_apply';
+  const allowed = new Set([current, ...(TRACKER_TRANSITIONS[current] || [])]);
+  const options = TRACKER_STATUS_OPTIONS.filter(([value])=>allowed.has(value));
+  return `<select class="tracker-status-select status-pill ${esc(current)}"
+    data-application-id="${esc(r.application_id)}" data-prev="${esc(current)}"
+    onchange="updateTrackerStatus(this)">${options.map(([value,label])=>
+      `<option value="${esc(value)}" ${value===current?'selected':''}>${esc(label)}</option>`).join('')}</select>`;
+}
+function priorityRank(v){ return ({high:3, medium:2, low:1})[v||''] || 0; }
+function rowValue(r, key){
+  if (key === 'priority_score') return r.priority_score === '' ? -1 : Number(r.priority_score);
+  if (key === 'fit_score') return r.fit_score === '' ? -1 : Number(r.fit_score);
+  if (key === 'priority') return priorityRank(r.priority);
+  const v = r[key] ?? '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return String(v);
+  return String(v).toLowerCase();
+}
+function sortTable(type, key){
+  const st = tableState[type];
+  if (st.sort === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+  else { st.sort = key; st.dir = key === 'priority_score' || key === 'last_updated' ? 'desc' : 'asc'; }
+  renderTab();
+}
+function setFilter(type, key, value){
+  tableState[type].filters[key] = value;
+  renderTab();
+}
+function sortedRows(type, rows){
+  const st = tableState[type];
+  return rows.slice().sort((a,b)=>{
+    const av = rowValue(a, st.sort), bv = rowValue(b, st.sort);
+    const cmp = av > bv ? 1 : av < bv ? -1 : 0;
+    return st.dir === 'asc' ? cmp : -cmp;
+  });
+}
+function filteredRows(type, rows){
+  const f = tableState[type].filters;
+  return rows.filter(r => Object.entries(f).every(([k,v]) => {
+    if (!v) return true;
+    if (k === 'location') return locationTags(r.location).includes(v);
+    return String(r[k]||'') === v;
+  }));
+}
+function sortIcon(type, key){
+  const st = tableState[type];
+  return st.sort === key ? (st.dir === 'asc' ? ' ↑' : ' ↓') : '';
+}
+function th(type, key, label){
+  return `<th class="sortable" onclick="sortTable('${type}','${key}')">${esc(label)}${sortIcon(type,key)}</th>`;
+}
+function tableWrap(type, cols, rowsHtml){
+  return `<div class="table-wrap" data-table="${esc(type)}"><table><thead><tr>${
+    cols.map(c=>th(type,c.key,c.label)).join('')
+  }</tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
+}
+function tableScroller(type){
+  return document.querySelector(`.table-wrap[data-table="${type}"]`);
+}
+function captureTableScroll(type){
+  const el = tableScroller(type);
+  return el ? {top:el.scrollTop, left:el.scrollLeft} : {top:0, left:0};
+}
+function restoreTableScroll(type, pos){
+  requestAnimationFrame(()=>{
+    const el = tableScroller(type);
+    if (!el) return;
+    el.scrollTop = pos.top || 0;
+    el.scrollLeft = pos.left || 0;
+  });
+}
+function filterSelect(type, key, label, rows){
+  const active = tableState[type].filters[key] || '';
+  const vals = [...new Set((key === 'location'
+    ? rows.flatMap(r=>locationTags(r.location))
+    : rows.map(r=>r[key])).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b)));
+  return `<label>${esc(label)}<select onchange="setFilter('${type}','${key}',this.value)">
+    <option value="">All</option>${vals.map(v=>`<option value="${esc(v)}" ${v===active?'selected':''}>${esc(key==='status'?statusLabel(v):v)}</option>`).join('')}
+  </select></label>`;
+}
+function locationTags(value){
+  return String(value||'').split(';').map(v=>v.trim()).filter(Boolean);
+}
+function tableTools(type, rows, filters, shown){
+  return `<div class="table-tools">${
+    filters.map(([key,label])=>filterSelect(type,key,label,rows)).join('')
+  }<span class="muted table-count">${shown} / ${rows.length}</span></div>`;
+}
+function profileIssueLine(text){
+  const needsFix = /candidate-profile|evidence-map|profile-intake|profile\/evidence|newer than candidate-profile/i.test(text);
+  return esc(text) + (needsFix && P
+    ? ` <button class="inline-fix" onclick="fixProjectProfile()">Fix profile</button>` : '');
+}
+async function fixProjectProfile(){
+  if (!P) return;
+  const res = await post('/api/profile/intake', {person:P.person});
+  if (res.error) addMsg('error', deviceTs(), res.error);
+  else addMsg('info', deviceTs(), res.profile_intake_started
+    ? 'profile-intake started' : 'profile-intake already running');
+  S = await api('/api/state');
+  updateBackendBadge();
+  renderTab();
+}
+function renderTab(){
+  if (tab==='strategy'){ tab='prep'; prepState.kind='strategy'; }   // legacy top-tab id
+  document.querySelectorAll('.tabs button').forEach(b=>b.className = b.dataset.tab===tab?'on':'');
+  const el = $('tabBody');
+  if (tab==='inbox'){
+    const pf = P.preflight;
+    el.innerHTML =
+      (pf.blocking.length? `<div class="inbox-item overdue"><span class="k">setup needed</span><br>${pf.blocking.map(profileIssueLine).join('<br>')}</div>`:'')
+      + (pf.warnings.length? pf.warnings.map(w=>`<div class="inbox-item gap"><span class="k">heads-up</span><br>${profileIssueLine(w)}</div>`).join(''):'')
+      + (P.inbox.length ? P.inbox.map(i=>
+        `<div class="inbox-item ${i.kind}"><span class="k">${esc(i.kind)}</span><br><strong>${esc(i.title)}</strong> — ${esc(i.text)}</div>`).join('')
+        : '<p class="muted">all quiet — nothing needs your attention</p>');
+  } else if (tab==='list'){
+    const addBtn = `<div class="topbar"><span class="spacer"></span><button class="primary" onclick="openAddJob()">Add job</button></div>`;
+    if (!P.jobs.length){ el.innerHTML=addBtn + '<p class="muted">empty — run <em>search</em> or add a manual opening</p>'; return; }
+    const base = P.jobs.map(r=>Object.assign({}, r, {
+      status: r.app_status || r.posting_status || 'unknown',
+      group: r.job_group || '',
+      priority: r.priority || r.suggested_priority || '',
+      focus_label: r.focused ? 'focused' : 'unfocused',
+    }));
+    const visible = sortedRows('list', filteredRows('list', base));
+    const rows = visible.map(r=>`<tr class="${r.focused?'focused-row':''}">
+      <td class="focus-cell"><button class="focus-btn ${r.focused?'on':''}" title="${r.focused?'unfocus':'focus'} — prep skills run only on focused positions"
+        onclick="toggleFocus('${esc(r.job_id)}', ${r.focused?'false':'true'})">${r.focused?'★':'☆'}</button></td>
+      <td>${esc(r.company)}</td><td>${jobLink(r)}</td><td>${statusPill(r.status)}</td>
+      <td>${esc(r.group)}</td><td>${esc(r.location)}</td>
+      <td class="score">${r.priority_score!==''?esc(r.priority_score):'—'}${r.score_freshness==='stale'?'<span class="score-stale">stale</span>':''}</td>
+      <td class="score">${r.fit_score!==''?esc(r.fit_score):'—'}${r.score_freshness==='stale'?'<span class="score-stale">stale</span>':''}</td>
+      <td>${esc(r.priority)}</td>
+      <td class="muted">${esc(r.score_note)}</td></tr>`).join('');
+    el.innerHTML = `<p class="muted">priority_score = weighted 0–100 pursuit score
+      (strategy/job-scores.json); fit 1–5 is the coarse research-stage estimate and is
+      superseded once scoring runs. Once a position is applied, its tracker status
+      replaces the posting status here.</p>` +
+      addBtn +
+      tableTools('list', base, [['location','location'],['group','group'],['priority','priority']], visible.length) +
+      `<p class="muted">★ focused: ${base.filter(r=>r.focused).length} — prep-strategy / prep-resume / prep-linkedin / prep-interview run ONLY on focused positions</p>` +
+      (visible.length ? tableWrap('list', [
+        {key:'focused', label:'★'},
+        {key:'company', label:'company'}, {key:'title', label:'title'},
+        {key:'status', label:'status'}, {key:'group', label:'group'},
+        {key:'location', label:'location'}, {key:'priority_score', label:'priority_score'},
+        {key:'fit_score', label:'fit_score'}, {key:'priority', label:'priority'},
+        {key:'score_note', label:'why'}
+      ], rows) : '<p class="muted">no rows match the filters</p>');
+  } else if (tab==='tracker'){
+    if (!P.tracker.length){ el.innerHTML='<p class="muted">empty</p>'; return; }
+    const base = P.tracker.map(r=>Object.assign({}, r, {group:r.job_group||''}));
+    const visible = sortedRows('tracker', filteredRows('tracker', base));
+    const rows = visible.map(r=>`<tr><td>${esc(r.company)}</td><td>${applicationJobLink(r)}</td>
+      <td>${esc(r.group)}</td><td>${trackerStatusSelect(r)}</td><td>${nextActionCell(r)}</td>
+      <td>${esc(r.next_action_due)}</td><td>${esc(r.last_updated)}</td></tr>`).join('');
+    el.innerHTML = tableTools('tracker', base, [['status','status'],['group','group']], visible.length) +
+      (visible.length ? tableWrap('tracker', [
+        {key:'company', label:'company'}, {key:'title', label:'title'},
+        {key:'group', label:'group'}, {key:'status', label:'status'},
+        {key:'next_action', label:'next action'}, {key:'next_action_due', label:'due'},
+        {key:'last_updated', label:'updated'}
+      ], rows) : '<p class="muted">no rows match the filters</p>');
+  } else if (tab==='prep'){
+    renderPrep(el);
+  }
+}
+async function renderStrategy(el){
+  el.innerHTML = '<p class="muted">composing…</p>';
+  const s = await api(`/api/project/${P.code}/strategy`);
+  if (s.error || !s.has_content){
+    el.innerHTML = '<p class="muted">no strategy yet — run <em>search</em>, then group &amp; prioritize; the report composes itself from the agent\'s artifacts</p>';
+    return;
+  }
+  const prioRows = s.priorities.map(p=>`<tr>
+    <td>${esc(p.company)}</td>
+    <td>${p.url?`<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)}</a>`:esc(p.title)}</td>
+    <td class="score">${esc(p.priority_score)}</td><td>${esc(p.priority||p.suggested_priority)}</td>
+    <td class="muted">${esc(p.note)}</td></tr>`).join('');
+  el.innerHTML = `<div class="article">
+    <span class="kicker">strategy report · composed from run artifacts</span>
+    <h1>${esc(P.focus)} — search strategy</h1>
+    ${s.exec_summary_md ? `<h2>Executive summary</h2><div class="lede">${mdToHtml(s.exec_summary_md)}</div>` : ''}
+    ${s.priorities.length ? `<h2>Priorities &amp; why</h2>
+      <table><tr><th>company</th><th>role</th><th>priority_score</th><th>priority</th><th>why</th></tr>${prioRows}</table>` : ''}
+    ${s.overrides.length ? `<h3>Overrides (human calls vs script suggestions)</h3><ul>` +
+      s.overrides.map(o=>`<li><strong>${esc(o.job_id||'')}</strong>: ${esc(o.reason||JSON.stringify(o))}</li>`).join('')+'</ul>' : ''}
+    ${s.priorities_md && s.exec_summary_md !== s.priorities_md ?
+      `<h2>Full prioritization rationale</h2>${mdToHtml(s.priorities_md.replace(s.exec_summary_md,''))}` : ''}
+    ${s.groups.map(g=>`<h2>Target group — ${esc(g.name)}</h2>${mdToHtml(g.content)}`).join('')}
+    ${s.companies.map(c=>`<h2>How to apply — ${esc(c.company)}</h2>${mdToHtml(c.content)}`).join('')}
+  </div>`;
+}
+function prepItems(kind, includeStale=false){
+  return (P.prep||[]).filter(a=>a.kind===kind && (includeStale || (a.state||'current')==='current'));
+}
+function prepStageItems(kind){
+  const workflow = kind==='resume' ? 'prep-resume' : kind==='linkedin' ? 'prep-linkedin' :
+    kind==='interview' ? 'prep-interview' : 'prep-strategy';
+  return (P.prep_staging||[]).filter(a=>a.workflow===workflow ||
+    (kind==='interview' && a.workflow==='story-bank'));
+}
+function prepKindCounts(){
+  return {
+    strategy: (P.strategy_files||[]).length,
+    resume: prepItems('resume').length,
+    linkedin: prepItems('linkedin').length,
+    interview: prepItems('interview').length,
+  };
+}
+function renderPrep(el){ renderPrepShell(el); }
+function renderPrepShell(el){
+  const ready = [
+    ['candidate profile', P.profile_ready],
+    ['resume variants', prepItems('resume').some(a=>a.kind==='resume')],
+    ['linkedin packet', prepItems('linkedin').length],
+    ['interview packets', prepItems('interview').length],
+  ];
+  const counts = prepKindCounts();
+  const failedStages = (P.prep_staging||[]).filter(a=>
+    ['validation_failed','publish_failed'].includes(a.state));
+  const staleCount = (P.prep||[]).filter(a=>(a.state||'current')==='stale').length;
+  const order = ['strategy','resume','linkedin','interview'];
+  const progress=P.prep_progress||{};
+  const phaseRows=Object.entries(progress.phases||{}).map(([name,value])=>
+    `<span class="${value.state==='published'?'ok':value.state==='running'?'':'no'}">`+
+    `${value.state==='published'?'✓':value.state==='running'?'⟳':'•'} ${esc(name.replace('-', ' '))}`+
+    `${value.completed!==undefined&&value.total!==undefined?' '+esc(value.completed+'/'+value.total):''}</span>`).join('');
+  if (!counts[prepState.kind]) prepState.kind = order.find(k=>counts[k]) || 'strategy';
+  const tabButton = (kind,label) => `<button class="${prepState.kind===kind?'on':''}"
+    onclick="selectPrepView('${kind}')">${label} <span class="muted">${counts[kind]}</span></button>`;
+  el.innerHTML = `
+    <div class="ready">${ready.map(([l,ok])=>`<span class="${ok?'ok':'no'}">${ok?'✓':'✗'} ${l}</span>`).join('')}</div>
+    ${phaseRows?`<div class="ready"><strong class="muted">Current prep run</strong>${phaseRows}</div>`:''}
+    ${failedStages.length ? `<p class="notice err"><strong>${failedStages.length} generated group(s) not published.</strong> `+
+      `The generated files were retained in this run's staging area; select the affected tab for details.</p>` : ''}
+    ${staleCount ? `<p class="muted">${staleCount} previous-group artifact(s) are stale and hidden from the default view.</p>` : ''}
+    <div class="prep-view-tabs">
+      ${tabButton('strategy','Strategy')}${tabButton('resume','Resume')}${tabButton('linkedin','LinkedIn')}${tabButton('interview','Interview')}
+    </div>
+    <div id="prepPanel" class="prep-detail"></div>`;
+  renderPrepPanel();
+}
+function selectPrepView(kind){
+  prepState.kind = kind;
+  renderPrep($('tabBody'));
+}
+function selectPrepArtifact(kind, path){
+  prepState.kind = kind;
+  prepState.selected[kind] = path;
+  renderPrepPanel();
+}
+function selectPrepArtifactFromButton(btn){
+  selectPrepArtifact(btn.dataset.kind, btn.dataset.path);
+}
+function artifactLabel(a){
+  return a.label || String(a.target||a.path||'artifact').replace(/[-_]/g,' ');
+}
+function renderPrepPanel(){
+  const panel = $('prepPanel');
+  if (!panel) return;
+  const kind = prepState.kind;
+  if (kind === 'strategy'){
+    panel.className = 'prep-detail';
+    renderStrategy(panel);
+    return;
+  }
+  panel.className = 'prep-detail' + (kind==='resume' ? ' wide' : '');
+  const items = prepItems(kind);
+  const staging = prepStageItems(kind).filter(a=>
+    ['validation_failed','publish_failed'].includes(a.state));
+  if (!items.length){
+    panel.innerHTML = (staging.length ? renderPrepStaging(staging) : '') +
+      '<p class="muted">no current published artifacts yet — run <em>prep</em>, ' +
+      '<em>prep-linkedin</em> or <em>prep-interview</em> from the agent session panel</p>';
+    return;
+  }
+  let selectedPath = prepState.selected[kind] || items[0].path;
+  const active = items.find(a=>a.path===selectedPath) || items[0];
+  if (!items.some(a=>a.path===selectedPath)) selectedPath = active.path;
+  prepState.selected[kind] = active.path;
+  const pickerClass = kind === 'interview' ? 'interview-picker' : 'prep-artifact-tabs';
+  panel.innerHTML = (staging.length ? renderPrepStaging(staging) : '') +
+    `<div class="${pickerClass}">` + items.map(a=>
+    `<button type="button" class="${a.path===active.path?'on':''}" data-kind="${attr(kind)}" data-path="${attr(a.path)}"
+      onclick="selectPrepArtifactFromButton(this)">
+      ${esc(artifactLabel(a))}</button>`).join('') + `</div>
+    <div id="prepArtifact"><p class="muted">loading…</p></div>`;
+  loadPrepArtifact(active);
+}
+function renderPrepStaging(items){
+  return `<div class="article"><h3>Generated but not published</h3>` + items.map(item=>{
+    const preview = item.path ? `<a class="source-link" href="#" data-path="${attr(item.path)}"
+      onclick="previewFile(this.dataset.path);return false">inspect staged output</a>` : '';
+    return `<p><strong>${esc(item.label)}</strong> · ${esc(item.state)} · `+
+      `<code>${esc(item.error_code||'publish-gate')}</code><br>`+
+      `<span class="muted">${esc(item.error_detail||'Validation did not pass.')}</span> ${preview}</p>`;
+  }).join('') + `</div>`;
+}
+async function loadPrepArtifact(item){
+  const mount = $('prepArtifact');
+  if (!mount) return;
+  try {
+    if (!prepState.cache[item.path]){
+      prepState.cache[item.path] = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(item.path)}`);
+    }
+    let extras = null;
+    if (item.kind === 'resume'){
+      const dir = item.path.replace(/\/[^/]*$/, '');
+      for (const n of ['resume-score.md', 'resume-validation.md']){
+        const pth = `${dir}/${n}`;
+        if (!(pth in prepState.cache)){
+          prepState.cache[pth] = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(pth)}`);
+        }
+      }
+      extras = {score: prepState.cache[`${dir}/resume-score.md`],
+                validation: prepState.cache[`${dir}/resume-validation.md`]};
+    }
+    if (!$('prepArtifact') || prepState.selected[prepState.kind] !== item.path) return;
+    const res = prepState.cache[item.path];
+    mount.innerHTML = renderPrepArtifact(item, res, extras);
+  } catch (err) {
+    mount.innerHTML = `<p class="muted">artifact load failed: ${esc(err && err.message ? err.message : err)}</p>`;
+  }
+}
+function renderPrepArtifact(item, res, extras){
+  if (res.error) return `<p class="muted">${esc(res.error)}</p>`;
+  const source = `<a class="source-link" href="#" data-path="${attr(item.path)}"
+    onclick="previewFile(this.dataset.path);return false">
+    ${esc(item.path)}${res.truncated?' (truncated)':''}</a>`;
+  if (item.kind === 'resume') return source + renderResumeArtifact(res.content, extras, item);
+  if (item.kind === 'linkedin') return source + renderLinkedInArtifact(res.content);
+  if (item.kind === 'interview') return source + renderInterviewArtifact(res.content);
+  return source + `<div class="article">${mdToHtml(res.content)}</div>`;
+}
+
+/* ---- resume view: part-1 compact score summary + part-2 full-page mock ---- */
+function parseResumeScore(md){
+  const dims = [], fixes = [];
+  let verdict = '', inFixes = false;
+  for (const l of (md||'').split('\n')){
+    const vm = l.match(/^Verdict:\s*(.+)$/i);
+    if (vm){ verdict = vm[1]; continue; }
+    if (/^\s*\|/.test(l)){
+      if (/^\s*\|[\s\-:|]+\|\s*$/.test(l)) continue;
+      const c = splitPipeRow(l);
+      if (c.length >= 2 && !/^dimension$/i.test(c[0]))
+        dims.push({name:c[0], score:c[1], note:c[2]||''});
+      continue;
+    }
+    if (/highest-leverage/i.test(l)){ inFixes = true; continue; }
+    const bm = l.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/);
+    if (inFixes && bm){ fixes.push(bm[1]); continue; }
+    if (inFixes && l.trim()) inFixes = false;
+  }
+  return {dims, verdict, fixes};
+}
+function parseResumeValidation(md){
+  const checks = [];
+  let coverage = '';
+  for (const l of (md||'').split('\n')){
+    const cm = l.match(/^\s*[-*]\s+`?(validate\w+)(?:\.py)?`?\s*([^:]*):\s*(PASS|FAIL)/i);
+    if (cm){
+      const qual = stripTicks(cm[2]).trim();
+      checks.push({name: cm[1].replace(/^validate_/,'').replace(/_/g,' ') +
+                   (qual ? ' · '+qual : ''),
+                   pass: /pass/i.test(cm[3])});
+      continue;
+    }
+    const mm = l.match(/must-have requirements? covered[^:]*:\s*(.+)$/i);
+    if (mm) coverage = stripTicks(mm[1]).replace(/\.$/,'');
+  }
+  return {checks, coverage};
+}
+function renderResumeArtifact(md, extras, item){
+  const score = extras && extras.score && !extras.score.error
+    ? parseResumeScore(extras.score.content) : {dims:[], verdict:'', fixes:[]};
+  const val = extras && extras.validation && !extras.validation.error
+    ? parseResumeValidation(extras.validation.content) : {checks:[], coverage:''};
+  const nums = score.dims.map(d=>scoreNum(d.score)).filter(n=>!isNaN(n));
+  const overall = nums.length ? Math.round(nums.reduce((a,b)=>a+b,0)/nums.length*10)/10 : NaN;
+  const chips = score.dims.map(d=>`<span class="li-chip ${scoreClass(scoreNum(d.score))}"
+    title="${esc(d.note)}">${esc(d.name)}<b>${esc(d.score)}</b></span>`).join('');
+  const valChips = val.checks.map(c=>`<span class="rs-check ${c.pass?'li-good':'li-bad'}">
+    ${c.pass?'✓':'✗'} ${esc(c.name)}</span>`).join('')
+    + (val.coverage?`<span class="rs-check li-good">must-haves ${esc(val.coverage)}</span>`:'');
+  const summary = (score.dims.length || val.checks.length) ? `<div class="li-summary">
+      <div class="li-summary-head">
+        <div><div class="li-sum-title">${esc(item && item.label ? item.label : 'Resume')} — evaluation</div>
+          ${score.verdict?`<div class="li-sum-meta">${esc(score.verdict)}</div>`:''}</div>
+        ${!isNaN(overall)?`<div class="li-overall ${scoreClass(overall)}" title="average of baseline score dimensions">
+          <span>${overall}/5</span><small>baseline</small></div>`:''}
+      </div>
+      ${chips?`<div class="li-chiprow">${chips}</div>`:''}
+      ${valChips?`<div class="li-chiprow">${valChips}</div>`:''}
+      ${score.fixes.length?`<div class="li-fixes"><b>Highest-leverage rewrites</b><ol>${
+        score.fixes.map(f=>`<li>${esc(f)}</li>`).join('')}</ol></div>`:''}
+    </div>` : '';
+  return summary + `<div class="resume-scroll"><div class="resume-page">${mdToHtml(md)}</div></div>`;
+}
+function labeledValue(lines, labels){
+  const labelRe = new RegExp(`^\\\\s*(?:${labels.join('|')})\\\\s*:?\\\\s*(.*)$`, 'i');
+  const stopRe = /^\s*(Current|Existing|Before|Old|Proposed|New|After|Changed|Recommendation|Why|Rationale|Reason)\s*:?/i;
+  for (let i=0; i<lines.length; i++){
+    const m = lines[i].match(labelRe);
+    if (!m) continue;
+    const out = [];
+    if (m[1]) out.push(m[1]);
+    for (let j=i+1; j<lines.length; j++){
+      if (/^#{1,4}\s+/.test(lines[j]) || stopRe.test(lines[j])) break;
+      if (lines[j].trim()) out.push(lines[j]);
+    }
+    return out.join('\n').trim();
+  }
+  return '';
+}
+function parseLinkedInChanges(md){
+  const changes = [];
+  const blocks = md.split(/\n(?=#{1,4}\s+)/).filter(Boolean);
+  for (const block of blocks){
+    const head = (block.match(/^#{1,4}\s+(.+)$/m)||[])[1];
+    if (!head) continue;
+    const lines = block.split('\n').slice(1);
+    const before = labeledValue(lines, ['Current','Existing','Before','Old']);
+    const after = labeledValue(lines, ['Proposed','New','After','Changed','Recommendation']);
+    const why = labeledValue(lines, ['Why','Rationale','Reason']);
+    if (before || after || why) changes.push({field:head.trim(), before, after, why});
+  }
+  if (!changes.length){
+    changes.push({field:'Update packet', before:'Not specified',
+      after:md.replace(/^#.*$/m,'').trim().slice(0,1200), why:'Use the packet language that best matches the selected target roles.'});
+  }
+  return changes;
+}
+function renderLinkedInArtifact(md){
+  // linkedin-review.md contract: semantic scorecard + add/remove/change sections.
+  const review = parseLinkedInReview(md);
+  return review ? renderLinkedInReview(review) : renderLinkedInPacket(md);
+}
+function renderLinkedInPacket(md){  // legacy fallback (update-packet.md, free-form files)
+  const changes = parseLinkedInChanges(md);
+  return `<div class="linkedin-profile">
+    <div class="linkedin-profile-head"><strong>LinkedIn update packet</strong></div>
+    ${changes.map(c=>`<div class="linkedin-change-card">
+      <div class="li-field">${esc(c.field)}</div>
+      <div class="li-diff">
+        <div class="li-box"><b>Existing</b><p>${esc(c.before || 'Not specified')}</p></div>
+        <div class="li-arrow">→</div>
+        <div class="li-box"><b>Change</b><p>${esc(c.after || 'Not specified')}</p></div>
+      </div>
+      <div class="li-why"><strong>Why better:</strong> ${esc(c.why || 'Sharper alignment with target-role keywords and recruiter scan patterns.')}</div>
+    </div>`).join('')}</div>`;
+}
+
+/* ---- linkedin review parsing (scorecard / proposals; wrapper headings optional) ---- */
+function splitPipeRow(line){            // backtick-aware: pipes inside `code` stay in the cell
+  const s = line.trim().replace(/^\|/,'').replace(/\|$/,'');
+  const cells = []; let cur = '', tick = false;
+  for (const ch of s){
+    if (ch === '`') tick = !tick;
+    if (ch === '|' && !tick){ cells.push(cur.trim()); cur = ''; }
+    else cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+function mdSectionByRe(md, re){
+  const lines = md.split('\n'); let start = -1;
+  for (let i = 0; i < lines.length; i++) if (re.test(lines[i])){ start = i + 1; break; }
+  if (start < 0) return '';
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) if (/^##\s/.test(lines[i])){ end = i; break; }
+  return lines.slice(start, end).join('\n');
+}
+function parseScorecard(part1){
+  const rows = []; let overall = ''; const fixes = [];
+  for (const l of part1.split('\n')){
+    if (/^\s*\|/.test(l)){
+      if (/^\s*\|[\s\-:|]+\|\s*$/.test(l)) continue;                 // separator row
+      const c = splitPipeRow(l);
+      if (c.length >= 2 && /\d+(?:\.\d+)?\s*\/\s*5/.test(c[1]) && !/^section$/i.test(c[0]))
+        rows.push({section:c[0], score:c[1], good:c[2]||'', improve:c[3]||'', missing:c[4]||''});
+      continue;
+    }
+    const om = l.match(/^Overall score:\s*(.+?)\.?\s*$/i);
+    if (om){ overall = om[1]; continue; }
+    const fm = l.match(/^\s*\d+[.)]\s+(.+)$/);                       // highest-leverage fixes
+    if (fm) fixes.push(fm[1]);
+  }
+  return {rows, overall, fixes};
+}
+function parseProposals(part2){
+  const out = [];
+  for (const raw of ('\n'+part2).split(/\n(?=###\s+)/)){
+    const b = raw.trim();
+    if (!/^###\s+/.test(b)) continue;
+    const lines = b.split('\n');
+    const sec = {name: lines[0].replace(/^###\s+/,'').trim(),
+                 evidence:'', proposedText:'', currentText:'', notes:[], remove:[], change:[],
+                 addGuidance:[], changeGuidance:[], guidance:[]};
+    let mode = '', inFence = false, fence = [];
+    for (const l of lines.slice(1)){
+      const fenceMatch = l.match(/^\s*```\s*(Current|Add|Proposed|Remove|Change|Guidance|text)?\s*$/i);
+      if (fenceMatch){
+        if (inFence){
+          const blk = fence.join('\n').trim();
+          if (mode === 'current') sec.currentText += (sec.currentText ? '\n\n' : '') + blk;
+          else if (mode === 'proposed') sec.proposedText += (sec.proposedText ? '\n\n' : '') + blk;
+          else if (mode === 'add') sec.addGuidance.push(blk);
+          else if (mode === 'change') sec.changeGuidance.push(blk);
+          else if (mode === 'guidance') sec.guidance.push(blk);
+          else if (mode === 'remove' && blk) sec.remove.push(blk);
+          fence = [];
+        } else if (fenceMatch[1] && fenceMatch[1].toLowerCase() !== 'text'){
+          mode = fenceMatch[1].toLowerCase();
+        }
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence){ fence.push(l); continue; }
+      const mm = l.match(/^\s*(?:\*\*\s*)?(Current|Add|Proposed|Remove|Change|Guidance)\s*:?\s*(?:\*\*)?\s*$/i);
+      if (mm){ mode = mm[1].toLowerCase(); continue; }
+      if (mode === 'current'){
+        if (l.trim()) sec.currentText += (sec.currentText ? '\n' : '') + l.trim();
+      } else if (mode === 'proposed'){
+        const em = l.match(/^Evidence[^:]*:\s*(.+)$/i);
+        if (em){ sec.evidence = em[1].replace(/\.$/,''); continue; }
+        if (l.trim()) sec.notes.push(l.trim());
+      } else if (mode === 'add'){
+        if (l.trim()) sec.addGuidance.push(l.trim());
+      } else if (mode === 'remove'){
+        const rm = l.match(/^\s*[-*]\s+(.+)$/);
+        if (rm) sec.remove.push(rm[1]);
+      } else if (mode === 'change'){
+        if (/^\s*\|/.test(l) && !/^\s*\|[\s\-:|]+\|\s*$/.test(l)){
+          const c = splitPipeRow(l);
+          if (c.length >= 2 && !/^current/i.test(c[0]))
+            sec.change.push({current:c[0], proposed:c[1], why:c[2]||''});
+        } else if (l.trim()) sec.changeGuidance.push(l.trim());
+      } else if (mode === 'guidance'){
+        if (l.trim()) sec.guidance.push(l.trim());
+      }
+    }
+    out.push(sec);
+  }
+  return out;
+}
+function parseLinkedInReview(md){
+  const title = (md.match(/^#\s+(.+)$/m)||[])[1] || 'LinkedIn Review';
+  const meta = [...md.matchAll(/^>\s?(.+)$/gm)].map(m=>m[1]);
+  const scorecard = parseScorecard(md);
+  const proposals = parseProposals(md);
+  if (!scorecard.rows.length && !proposals.length) return null;
+  return {title, meta, scorecard, proposals};
+}
+
+/* ---- linkedin-mimicking mini mocks (moderately realistic, per section) ---- */
+function stripTicks(s){ return String(s||'').replace(/`/g,'').trim(); }
+function isEmptyish(s){
+  return !s || /^(no visible|not specified|none\b|no experience|nothing|you haven't|empty|n\/a|—|-$)/i.test(s.trim());
+}
+function liPersonName(){
+  const p = (S.persons||[]).find(x=>P && x.person===P.person);
+  return (p && p.name) || (P && P.person) || 'You';
+}
+function liInitials(name){
+  return name.split(/\s+/).map(w=>w[0]).filter(Boolean).slice(0,2).join('').toUpperCase() || 'IN';
+}
+function limEmpty(text){
+  return `<div class="lim lim-empty-state"><div class="lim-empty">${esc(text||'Nothing here yet')}</div></div>`;
+}
+function limProfile(headline, location){
+  const name = liPersonName();
+  return `<div class="lim"><div class="lim-cover"></div><div class="lim-id">
+    <div class="lim-avatar">${esc(liInitials(name))}</div>
+    <div class="lim-name">${esc(name)}</div>
+    <div class="lim-headline">${headline ? esc(headline) : '<span style="color:#999">—</span>'}</div>
+    <div class="lim-loc">${location ? esc(location)+' · ' : ''}<span class="lim-link">Contact info</span></div>
+  </div></div>`;
+}
+function limAbout(text){
+  return `<div class="lim"><div class="lim-sec-title">About</div>
+    <div class="lim-body">${esc(text)}</div></div>`;
+}
+function limExperience(text){
+  const yearRe = /\b(19|20)\d{2}\b|present/i;
+  const entries = text.split(/\n\s*\n/).map(block=>{
+    const ls = block.split('\n').map(x=>x.trim()).filter(Boolean);
+    if (!ls.length) return null;
+    let head = ls[0], rest = ls.slice(1), role = head, org = '', dates = '';
+    // "Role — Company — dates" (em/en-dash or pipe separated), else hyphen, else "Role, Company"
+    let parts = head.split(/\s+[—–|]\s+/).map(s=>s.trim()).filter(Boolean);
+    if (parts.length === 1) parts = head.split(/\s+-\s+/).map(s=>s.trim()).filter(Boolean);
+    if (parts.length > 1){
+      const di = parts.findIndex((p,ix)=> ix>0 && yearRe.test(p));
+      if (di > 0) dates = parts.splice(di,1)[0];
+      role = parts.shift();
+      if (parts.length) org = parts.join(' · ');
+    } else {
+      const cs = role.split(',').map(s=>s.trim());
+      if (cs.length > 1 && cs[cs.length-1].length <= 42){ org = cs.pop(); role = cs.join(', '); }
+    }
+    // dates on a following non-bullet line
+    if (!dates && rest.length && yearRe.test(rest[0]) && !/^[-*•‣·]/.test(rest[0])){ dates = rest[0]; rest = rest.slice(1); }
+    const bullets = rest.map(x=>x.replace(/^[-*•‣·]\s*/,'').trim()).filter(Boolean);
+    return {role, org, dates, bullets};
+  }).filter(Boolean);
+  if (!entries.length) return limEmpty();
+  return `<div class="lim"><div class="lim-sec-title">Experience</div>` +
+    entries.map(e=>`<div class="lim-item">
+      <div class="lim-logo">${esc((e.org||e.role).charAt(0))}</div>
+      <div style="min-width:0">
+        <div class="lim-role">${esc(e.role)}</div>
+        ${e.org?`<div class="lim-org">${esc(e.org)}</div>`:''}
+        ${e.dates?`<div class="lim-dates">${esc(e.dates)}</div>`:''}
+        ${e.bullets.length?`<ul class="lim-bullets">${e.bullets.map(b=>`<li>${esc(b)}</li>`).join('')}</ul>`:''}
+      </div></div>`).join('') + `</div>`;
+}
+function limEducation(text){
+  const groups = text.split(/\n\s*\n/).map(g=>g.split('\n').map(x=>x.trim()).filter(Boolean)).filter(g=>g.length);
+  if (!groups.length) return limEmpty();
+  return `<div class="lim"><div class="lim-sec-title">Education</div>` +
+    groups.map(g=>`<div class="lim-item">
+      <div class="lim-logo">${esc(g[0].charAt(0))}</div>
+      <div style="min-width:0">
+        <div class="lim-role">${esc(g[0])}</div>
+        ${g[1]?`<div class="lim-org">${esc(g[1])}</div>`:''}
+        ${g.slice(2).map(x=>`<div class="lim-dates">${esc(x)}</div>`).join('')}
+      </div></div>`).join('') + `</div>`;
+}
+function limSkills(text){
+  const pinned = [], other = [];
+  for (const l of text.split('\n')){
+    const t = l.trim();
+    if (!t || /:$/.test(t)) continue;            // header lines ("Top 3 pinned skills:")
+    const nm = t.match(/^\d+[.)]\s+(.+)$/);
+    if (nm) pinned.push(nm[1]); else other.push(t.replace(/^[-*]\s+/,''));
+  }
+  if (!pinned.length && !other.length) return limEmpty();
+  return `<div class="lim"><div class="lim-sec-title">Skills</div><div class="lim-pills">
+    ${pinned.map(s=>`<span class="lim-pill top">${esc(s)}</span>`).join('')}
+    ${pinned.length&&other.length?'<span class="lim-pill-label">More skills</span>':''}
+    ${other.map(s=>`<span class="lim-pill">${esc(s)}</span>`).join('')}
+  </div></div>`;
+}
+function limFeatured(text){
+  const groups = text.split(/\n\s*\n/).map(g=>g.split('\n').map(x=>x.trim()).filter(Boolean)).filter(g=>g.length);
+  if (!groups.length) return limEmpty();
+  const cards = groups.map(g=>(/caption:?\s*$/i.test(g[0]) ? g.slice(1) : g).join(' '));
+  return `<div class="lim"><div class="lim-sec-title">Featured</div>
+    <div class="lim-cards">${cards.map(c=>`<div class="lim-card">${esc(c)}</div>`).join('')}</div></div>`;
+}
+function limActivity(text){
+  const name = liPersonName();
+  const groups = text.split(/\n\s*\n/).map(g=>g.split('\n').map(x=>x.trim()).filter(Boolean)).filter(g=>g.length);
+  if (!groups.length) return limEmpty("You haven't posted yet");
+  const posts = groups.map(g=>(/^post[^:]*:$/i.test(g[0]) ? g.slice(1) : g).join('\n'));
+  return `<div class="lim"><div class="lim-sec-title">Activity</div>` +
+    posts.map(p=>`<div class="lim-post">
+      <div class="lim-post-head"><div class="lim-avatar-s">${esc(liInitials(name))}</div>
+        <div><div class="lim-post-name">${esc(name)}</div><div class="lim-post-sub">draft · not published</div></div></div>
+      <div class="lim-post-body">${esc(p)}</div></div>`).join('') + `</div>`;
+}
+function limGeneric(secTitle, text){
+  return `<div class="lim"><div class="lim-sec-title">${esc(secTitle)}</div>
+    <div class="lim-body">${esc(text)}</div></div>`;
+}
+function liSecKey(name){
+  const n = String(name||'').toLowerCase();
+  if (n.includes('headline')) return 'headline';
+  if (n.includes('basic')) return 'basics';
+  if (n.includes('about')) return 'about';
+  if (n.includes('experience')) return 'experience';
+  if (n.includes('skill')) return 'skills';
+  if (n.includes('featured')) return 'featured';
+  if (n.includes('education')) return 'education';
+  if (n.includes('license') || n.includes('certification')) return 'licenses';
+  if (n.includes('activity')) return 'activity';
+  return 'generic';
+}
+function liMock(sec, content, emptyText){
+  const key = liSecKey(sec.name);
+  const text = stripTicks(content);
+  if (isEmptyish(text)){
+    if (key==='headline' || key==='basics') return limProfile('', '');
+    return limEmpty(emptyText || text || 'Nothing here yet');
+  }
+  if (key==='headline') return limProfile(text, '');
+  if (key==='basics'){
+    const lm = text.match(/location\s*:?\s*(.+)/i);
+    return limProfile('', lm ? stripTicks(lm[1]) : text);
+  }
+  if (key==='about') return limAbout(text);
+  if (key==='experience') return limExperience(text);
+  if (key==='skills') return limSkills(text);
+  if (key==='featured') return limFeatured(text);
+  if (key==='education') return limEducation(text);
+  if (key==='licenses') return limGeneric('Licenses & certifications', text);
+  if (key==='activity') return limActivity(text);
+  return limGeneric(sec.name, text);
+}
+function scoreNum(s){
+  const m = String(s||'').match(/(\d+(?:\.\d+)?)\s*\/\s*5/);
+  return m ? parseFloat(m[1]) : NaN;
+}
+function scoreClass(n){
+  if (isNaN(n)) return 'li-mid';
+  return n >= 3.5 ? 'li-good' : n >= 2.5 ? 'li-mid' : 'li-bad';
+}
+/* scoring model: Activity, License & Featured are NOT score items; Experience carries
+   3x the weight of every other section in the overall (client-side recompute
+   keeps legacy review files consistent with the current model). */
+const LI_UNSCORED = /activity|licen|featured/i;
+const LI_EXP_WEIGHT = 3;
+function liWeightedOverall(rows, stated){
+  let num = 0, den = 0;
+  for (const row of rows){
+    const n = scoreNum(row.score);
+    if (isNaN(n)) continue;
+    const w = /experience/i.test(row.section) ? LI_EXP_WEIGHT : 1;
+    num += n * w; den += w;
+  }
+  return den ? Math.round(num / den * 10) / 10 : scoreNum(stated);
+}
+function renderLinkedInReview(r){
+  const sc = r.scorecard;
+  const scoredRows = sc.rows.filter(row=>!LI_UNSCORED.test(row.section));
+  const overallN = liWeightedOverall(scoredRows, sc.overall);
+  const secId = i => `lisec-${i}`;
+  const propIdx = name => r.proposals.findIndex(p=>liSecKey(p.name)===liSecKey(name));
+  const chips = scoredRows.map(row=>{
+    const idx = propIdx(row.section);
+    const tip = [row.improve, row.missing].filter(Boolean).join(' · ');
+    return `<button class="li-chip ${scoreClass(scoreNum(row.score))}" title="${esc(tip)}"
+      ${idx>=0?`onclick="document.getElementById('${secId(idx)}').scrollIntoView({behavior:'smooth'})"`:''}>
+      ${esc(row.section)}<b>${esc(row.score)}</b></button>`;
+  }).join('');
+  const cards = r.proposals.map((sec,i)=>{
+    const row = scoredRows.find(x=>liSecKey(x.section)===liSecKey(sec.name));
+    // Current pane source: explicit **Current:** block → all change-table current cells → first cell.
+    // (Multi-entry sections like Experience have no single change cell, so prefer the block.)
+    const curSrc = sec.currentText
+      || sec.change.map(c=>c.current).filter(Boolean).join('\n\n')
+      || (sec.change[0]||{}).current || '';
+    const cur = stripTicks(curSrc);
+    // Only an explicit **Proposed** copy block belongs inside the LinkedIn mock.
+    // Add/Change content is advisory and is rendered below, never as a role,
+    // skill tag, or education entry.
+    const proposed = sec.proposedText;
+    const whys = sec.change.map(c=>c.why).filter(Boolean);
+    return `<div class="li-section-card" id="${secId(i)}">
+      <div class="li-sec-head"><span class="li-sec-name">${esc(sec.name)}</span>
+        ${row?`<span class="li-score-pill ${scoreClass(scoreNum(row.score))}">${esc(row.score)}</span>`:''}
+      </div>
+      <div class="li-ba">
+        <div class="li-pane before"><div class="li-pane-tag">Current</div>${liMock(sec, cur)}</div>
+        <div class="li-pane after"><div class="li-pane-tag">Proposed</div>${liMock(sec, proposed, 'No proposal')}</div>
+      </div>
+      ${sec.remove.length?`<div class="li-remove"><b>Remove / avoid</b><ul>${sec.remove.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
+      ${whys.length?`<div class="li-why2"><strong>Why:</strong> ${esc(whys.join(' '))}</div>`:''}
+      ${sec.changeGuidance.length?`<div class="li-guidance"><strong>Change guidance</strong>${esc(sec.changeGuidance.join(' '))}</div>`:''}
+      ${sec.addGuidance.length?`<div class="li-guidance"><strong>Add guidance</strong>${esc(sec.addGuidance.join(' '))}</div>`:''}
+      ${sec.guidance.length?`<div class="li-guidance"><strong>Guidance</strong>${esc(sec.guidance.join(' '))}</div>`:''}
+      ${sec.notes.length?`<div class="li-note">${esc(sec.notes.join(' '))}</div>`:''}
+      ${sec.evidence?`<div class="li-ev">Evidence: ${esc(sec.evidence)}</div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="li-review">
+    <div class="li-summary">
+      <div class="li-summary-head">
+        <div><div class="li-sum-title">${esc(r.title)}</div>
+          ${r.meta.length?`<div class="li-sum-meta">${esc(r.meta[0])}</div>`:''}</div>
+        <div class="li-overall ${scoreClass(overallN)}"
+          title="weighted average — Experience ×${LI_EXP_WEIGHT}, Activity/License/Featured excluded">
+          <span>${isNaN(overallN)?esc(sc.overall||'—'):overallN+'/5'}</span><small>overall</small></div>
+      </div>
+      <div class="li-chiprow">${chips}</div>
+      <div class="li-sum-meta">scoring: Experience ×${LI_EXP_WEIGHT} weight · Activity, License &amp; Featured not scored</div>
+      ${sc.fixes.length?`<div class="li-fixes"><b>Highest-leverage fixes</b><ol>${sc.fixes.map(f=>`<li>${esc(f)}</li>`).join('')}</ol></div>`:''}
+    </div>
+    ${cards}
+  </div>`;
+}
+function renderInterviewArtifact(md){
+  // The story bank is rendered ONCE below from the canonical store — strip any
+  // embedded copy so old packs don't double up.
+  const cleaned = stripStoryBankSection(md);
+  const packHtml = linkifyStoryIds(mdToHtml(cleaned));
+  return `<div class="interview-prep">${packHtml}${renderStoryBankSection()}</div>`;
+}
+function stripStoryBankSection(md){
+  const out=[]; let skip=false;
+  for (const l of (md||'').split('\n')){
+    if (/^##\s+Story\s+Bank/i.test(l)){ skip=true; continue; }
+    if (skip && /^##\s+/.test(l)) skip=false;      // next H2 ends the section
+    if (!skip) out.push(l);
+  }
+  return out.join('\n');
+}
+function storyEntries(){ return (P && P.story_bank) || []; }
+function storyById(id){ return storyEntries().find(s=>s.id===id); }
+/* wrap ST-NN tokens in the pack as hover-popup + scroll-to-bank links */
+function linkifyStoryIds(html){
+  return html.replace(/\bST-\d+\b/g, id => storyById(id)
+    ? `<span class="story-ref" onclick="scrollToStory('${id}')" `
+      + `onmouseenter="showStoryPop(event,'${id}')" onmouseleave="hideStoryPop()">${id}</span>`
+    : id);
+}
+function showStoryPop(ev,id){
+  const s=storyById(id); if(!s) return;
+  let pop=$('storyPop');
+  if(!pop){ pop=document.createElement('div'); pop.id='storyPop'; pop.className='story-pop';
+    document.body.appendChild(pop); }
+  const row=(lab,v)=> v ? `<div><b>${lab}</b> ${esc(v)}</div>` : '';
+  pop.innerHTML = `<div class="sp-t">${esc(id)} — ${esc(s.title||'')}</div>`
+    + row('S:',s.situation)+row('T:',s.task)+row('A:',s.action)+row('R:',s.result);
+  pop.style.display='block';
+  const r=ev.target.getBoundingClientRect();
+  pop.style.left=Math.max(8, Math.min(r.left, window.innerWidth-440))+'px';
+  pop.style.top=(r.bottom+6)+'px';
+}
+function hideStoryPop(){ const p=$('storyPop'); if(p) p.style.display='none'; }
+function scrollToStory(id){
+  hideStoryPop();
+  const row=document.getElementById('story-'+id); if(!row) return;
+  row.scrollIntoView({behavior:'smooth', block:'center'});
+  row.querySelectorAll('td').forEach(td=>{ td.classList.add('hl-target');
+    setTimeout(()=>td.classList.remove('hl-target'),1600); });
+}
+let sbEditId=null;
+function renderStoryBankSection(){
+  if(!storyEntries().length) return '';
+  return `<div class="story-bank-wrap"><h2>Story Bank</h2>
+    <p class="muted">Canonical STAR stories — click ✎ to edit S/T/A/R/Best-for; saves write to
+      <code>interviews/story-bank.json</code>. Story IDs elsewhere link here.</p>
+    <div id="storyBankWrap">${renderStoryBankInner()}</div></div>`;
+}
+function renderStoryBankInner(){
+  const cell=v=>esc(v||'');
+  const head=`<tr><th></th><th>ID</th><th>Title</th><th>Source</th><th>S</th><th>T</th>`
+    +`<th>A</th><th>R</th><th>Best for</th><th>EV refs</th></tr>`;
+  const body=storyEntries().map(s=>{
+    const editing=sbEditId===s.id;
+    const fld=f=> editing ? `<textarea id="sb_${f}_${s.id}">${esc(s[f]||'')}</textarea>` : cell(s[f]);
+    const ctrl=editing
+      ? `<button class="sb-btn save" onclick="saveStory('${s.id}')">save</button>`
+        +`<button class="sb-btn" onclick="cancelStoryEdit()">cancel</button>`
+      : `<button class="sb-icon" title="edit this story" onclick="toggleStoryEdit('${s.id}')">✎</button>`;
+    return `<tr id="story-${s.id}" class="${editing?'editing':''}"><td class="sb-edit">${ctrl}</td>`
+      +`<td><b>${cell(s.id)}</b></td><td>${cell(s.title)}</td><td>${cell(s.source)}</td>`
+      +`<td>${fld('situation')}</td><td>${fld('task')}</td><td>${fld('action')}</td>`
+      +`<td>${fld('result')}</td><td>${fld('best_for')}</td><td>${cell(s.ev_refs)}</td></tr>`;
+  }).join('');
+  return `<table class="story-bank-table">${head}${body}</table>`;
+}
+function refreshStoryBank(){ const w=$('storyBankWrap'); if(w) w.innerHTML=renderStoryBankInner(); }
+function toggleStoryEdit(id){ sbEditId=id; refreshStoryBank(); }
+function cancelStoryEdit(){ sbEditId=null; refreshStoryBank(); }
+async function saveStory(id){
+  const payload={id};
+  ['situation','task','action','result','best_for'].forEach(f=>{
+    const el=$('sb_'+f+'_'+id); if(el) payload[f]=el.value; });
+  const res=await post(`/api/project/${P.code}/story-bank`, payload);
+  if(res && res.entries){ P.story_bank=res.entries; sbEditId=null; refreshStoryBank(); }
+  else alert('save failed: '+((res&&res.error)||'unknown'));
+}
+async function previewFile(path){
+  const res = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(path)}`);
+  const el = $('preview');
+  el.innerHTML = res.error ? `<p class="muted">${esc(res.error)}</p>`
+    : `<h2>${esc(res.path)}${res.truncated?' <span class="muted">(truncated)</span>':''}</h2>
+       ${res.path.endsWith('.md')?`<div class="article">${mdToHtml(res.content)}</div>`
+         :`<pre class="preview">${esc(res.content)}</pre>`}`;
+  el.scrollIntoView({behavior:'smooth'});
+}
+async function openApplicationArtifact(path){
+  showModal(`<button class="modal-close" onclick="hideModal()" aria-label="Close">X</button>
+    <h1 class="modal-title">Application packet</h1>
+    <p class="muted">${esc(path)}</p>
+    <div id="applicationArtifact"><p class="muted">loading...</p></div>`, 'application-modal');
+  const res = await api(`/api/project/${P.code}/file?path=${encodeURIComponent(path)}`);
+  const mount = $('applicationArtifact');
+  if (!mount) return;
+  mount.innerHTML = res.error ? `<p class="muted">${esc(res.error)}</p>`
+    : `${res.truncated?'<p class="muted">truncated</p>':''}
+       ${res.path.endsWith('.md') ? `<div class="article">${mdToHtml(res.content)}</div>`
+         : `<pre class="preview">${esc(res.content)}</pre>`}`;
+}
+function openTargets(){
+  const m = P.meta;
+  showModal(`
+    <h1>Project targets</h1>
+    <p class="muted">Named employers become searchable as soon as you save. Broader
+      seeds and close-peer expansion continue in the background; completed additions are
+      merged only if this preference revision is still current.</p>
+    <label>target locations <span class="req">*</span></label>
+    <input type="text" id="tg_loc" value="${esc(m.target_locations.join(', '))}">
+    <label>focus role</label><input type="text" id="tg_role" value="${esc(m.focus_role)}">
+    <label>target level</label><input type="text" id="tg_level" value="${esc(m.target_level)}">
+    <label>target companies (seeds)</label><input type="text" id="tg_comp" value="${esc(m.target_companies.join(', '))}">
+    <label>comp range</label><input type="text" id="tg_pay" value="${esc(m.comp_range)}">
+    <label>negatives</label><input type="text" id="tg_neg" value="${esc(m.negatives.join(', '))}">
+    <div style="margin-top:1rem; display:flex; gap:.5rem">
+      <button class="primary" id="tg_submit" onclick="saveTargets()">Save</button>
+      <button id="tg_cancel" onclick="hideModal()">Cancel</button></div>
+    <p class="muted" id="tg_err"></p>`);
+}
+async function saveTargets(){
+  const submit=$('tg_submit'), cancel=$('tg_cancel');
+  submit.disabled=true; cancel.disabled=true; modalLocked=true;
+  submit.innerHTML=`Saving preferences ${animatedDots()}`;
+  $('tg_err').textContent='Explicit targets will be searchable immediately; expansion continues in background…';
+  const res = await post(`/api/project/${P.code}/meta`, {
+    target_locations: $('tg_loc').value, focus_role: $('tg_role').value,
+    target_level: $('tg_level').value, target_companies: $('tg_comp').value,
+    comp_range: $('tg_pay').value, negatives: $('tg_neg').value});
+  if (res.error){ $('tg_err').textContent = res.error; submit.disabled=false;
+    cancel.disabled=false; modalLocked=false; submit.textContent='Save'; return; }
+  modalLocked=false;
+  hideModal(); openProject(P.code);
+}
+
+function openAddJob(){
+  showModal(`
+    <h1>Add job</h1>
+    <label>company <span class="req">*</span></label><input type="text" id="mj_company">
+    <label>title <span class="req">*</span></label><input type="text" id="mj_title">
+    <label>location <span class="req">*</span></label><input type="text" id="mj_location">
+    <label>source URL <span class="req">*</span></label><input type="text" id="mj_source_url">
+    <label>job page URL</label><input type="text" id="mj_job_page_url">
+    <label>job group</label><input type="text" id="mj_job_group">
+    <label>remote policy</label><select id="mj_remote_policy">
+      <option value="unknown">unknown</option><option value="onsite">onsite</option>
+      <option value="hybrid">hybrid</option><option value="remote">remote</option>
+    </select>
+    <label>posting status</label><select id="mj_posting_status">
+      <option value="open">open</option><option value="unknown">unknown</option><option value="closed">closed</option>
+    </select>
+    <label>seniority</label><input type="text" id="mj_seniority">
+    <label>fit score</label><input type="text" id="mj_fit_score" placeholder="1-5">
+    <label>priority</label><select id="mj_priority">
+      <option value=""></option><option value="high">high</option><option value="medium">medium</option><option value="low">low</option>
+    </select>
+    <label>must-have requirements</label><textarea id="mj_must"></textarea>
+    <label>nice-to-have requirements</label><textarea id="mj_nice"></textarea>
+    <label>JD summary</label><textarea id="mj_summary"></textarea>
+    <label>notes</label><textarea id="mj_notes">Manual opening added from web UI.</textarea>
+    <div style="margin-top:1rem; display:flex; gap:.5rem">
+      <button class="primary" onclick="saveManualJob()">Save</button>
+      <button onclick="hideModal()">Cancel</button>
+    </div><p class="muted" id="mj_err" style="margin-top:.5rem"></p>`);
+}
+async function saveManualJob(){
+  const payload = {
+    company: $('mj_company').value.trim(),
+    title: $('mj_title').value.trim(),
+    location: $('mj_location').value.trim(),
+    source_url: $('mj_source_url').value.trim(),
+    job_page_url: $('mj_job_page_url').value.trim(),
+    job_group: $('mj_job_group').value.trim(),
+    remote_policy: $('mj_remote_policy').value,
+    posting_status: $('mj_posting_status').value,
+    seniority: $('mj_seniority').value.trim(),
+    fit_score: $('mj_fit_score').value.trim(),
+    priority: $('mj_priority').value,
+    must_have_requirements: $('mj_must').value.trim(),
+    nice_to_have_requirements: $('mj_nice').value.trim(),
+    jd_summary: $('mj_summary').value.trim(),
+    notes: $('mj_notes').value.trim(),
+  };
+  const res = await post(`/api/project/${P.code}/jobs/manual`, payload);
+  if (res.error){ $('mj_err').textContent = res.error; return; }
+  hideModal();
+  tab = 'list';
+  await openProject(P.code);
+}
+
+/* ---------------- agent session ---------------- */
+async function startRun(){
+  if (activeRid()) return;   // a run is live — the button is a stop control now
+  const taskText = $('task').value.trim();
+  const userText = taskText || `Run ${wfSel}`;
+  const res = await post('/api/run', {workflow: wfSel, task:taskText,
+    project: P ? P.code : null, mock: S.backend==='mock'});
+  if (res.error){ addMsg('error','',res.error); return; }
+  addMsg('user', deviceTs(), userText);
+  $('task').value = '';
+  attach(res.rid, true);
+}
+function deviceTs(){
+  return new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit',
+    second:'2-digit', hour12:false});
+}
+async function loadChatHistory(){
+  const log=$('log');
+  if (!P || !log) return;
+  const hist = await api(`/api/project/${P.code}/chat-log`);
+  log.innerHTML = '';
+  if (hist.error || !hist.messages || !hist.messages.length){
+    addMsg('info', deviceTs(), '// each project is one local agent\nsession — buttons run the same skills as `rolenavi run …`');
+    return;
+  }
+  for (const m of hist.messages) addMsg(m.kind || 'info', m.ts || deviceTs(), m.text || '');
+}
+function addMsg(kind, ts, text){
+  const log=$('log'); if(!log) return;
+  const activities = [$('universeActivity'), $('runActivity')].filter(Boolean);
+  const d=document.createElement('div'); d.className = kind === 'user' ? 'msg user' : 'msg '+kind;
+  const chip = {stream:'agent', info:'sys', artifact:'file', store:'db', validator:'check',
+    approval:'gate', approval_wait:'gate', result:'done', done:'done',
+    user:'you', error:'err', attention:'action', prep_progress:'prep'}[kind]||kind;
+  const stamp = ts || deviceTs();
+  d.innerHTML=`<span class="ts">${esc(stamp)}</span>`+`<span class="chip">${chip}</span>`+esc(text);
+  const anchor=activities.find(activity=>activity.parentNode===log);
+  if(anchor) log.insertBefore(d,anchor); else log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+}
+function showUniverseActivity(text='building search universe'){
+  const log=$('log'); if(!log) return;
+  let d=$('universeActivity');
+  if (!d){
+    d=document.createElement('div'); d.id='universeActivity';
+    d.className='msg info activity-indicator';
+  }
+  if(d.dataset.activityText!==text){
+    d.dataset.activityText=text;
+    d.innerHTML=`<span class="ts">${esc(deviceTs())}</span><span class="chip">universe</span>`+
+      esc(text)+`<span class="typing-dots"><span></span><span></span><span></span></span>`;
+  }
+  if (d.parentNode !== log) log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+}
+function clearUniverseActivity(){ const d=$('universeActivity'); if(d)d.remove(); }
+function stopUniversePolling(){
+  if(universePoller){ clearInterval(universePoller); universePoller=null; }
+  universeSeen=0; universeProject=''; clearUniverseActivity();
+}
+function startUniversePolling(){
+  if(!P) return;
+  if(universePoller) clearInterval(universePoller);
+  universeProject=P.code; universeSeen=0;
+  updateUniverseChrome();
+  if(P.universe_run?.status==='running'){
+    showUniverseActivity('building target-employer universe');
+    universePoller=setInterval(pollUniverse,1000);
+    pollUniverse();
+  } else if(P.universe_run?.started && P.universe_status?.ready){
+    addMsg('result',deviceTs(),'Search universe ready — Search is enabled.');
+  } else if(P.universe_run?.started && ['failed','blocked','partial'].includes(P.universe_run.status)){
+    addMsg('attention',deviceTs(),`Universe update ${P.universe_run.status}: `+
+      `${P.universe_run.summary||P.universe_status?.reason||'see the run log'}`);
+  }
+}
+async function pollUniverse(){
+  if(!P || !universeProject || P.code!==universeProject) return;
+  const view=await api(`/api/project/${P.code}/universe-run?since=${universeSeen}`);
+  if(view.error) return;
+  for(const event of (view.events||[])) addMsg(event.kind||'info',event.ts||deviceTs(),event.text||'');
+  universeSeen=view.n_events||universeSeen;
+  P.universe_run={status:view.status,summary:view.summary,started:view.started};
+  updateUniverseChrome();
+  if(view.status==='running'){
+    showUniverseActivity('building target-employer universe');
+    return;
+  }
+  clearUniverseActivity();
+  if(universePoller){ clearInterval(universePoller); universePoller=null; }
+  const next=await api('/api/project/'+P.code);
+  if(next.error) return;
+  P=next;
+  updateUniverseChrome();
+  renderRunList();
+}
+function showRunActivity(text='running'){
+  const log=$('log'); if(!log) return;
+  let d=$('runActivity');
+  if (!d){
+    d=document.createElement('div');
+    d.id='runActivity';
+    d.className='msg info activity-indicator';
+  }
+  if(d.dataset.activityText!==text){
+    d.dataset.activityText=text;
+    d.innerHTML=`<span class="ts">${esc(deviceTs())}</span><span class="chip">run</span>`+
+      esc(text)+`<span class="typing-dots"><span></span><span></span><span></span></span>`;
+  }
+  if (d.parentNode !== log) log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+}
+function clearRunActivity(){
+  const d=$('runActivity');
+  if (d) d.remove();
+}
+async function attach(rid, replay=true){ currentRid=rid; seen=0;
+  if($('adot'))$('adot').className='dot live';
+  if (poller) clearInterval(poller);
+  showRunActivity('starting');
+  setRunButton();
+  if (!replay){
+    const v = await api(`/api/runs/${rid}?since=0`);
+    if (!v.error){
+      seen = v.n_events;
+      renderApproval(v);
+      if (v.status !== 'running'){ if($('adot'))$('adot').className='dot'; currentRid=null;
+        clearRunActivity(); setRunButton(); return; }
+    }
+  }
+  poller=setInterval(poll,1000); poll(); }
+function stopPolling(){ if (poller){ clearInterval(poller); poller=null; } currentRid=null;
+  clearRunActivity();
+  setRunButton(); }
+async function poll(){
+  if (!currentRid || !$('log')) return;
+  const v = await api(`/api/runs/${currentRid}?since=${seen}`);
+  if (v.error) return;
+  for (const e of v.events) addMsg(e.kind, e.ts, e.text);
+  seen = v.n_events;
+  renderApproval(v);
+  if (v.workflow==='prep') await refreshPrepState();
+  if (v.status!=='running'){
+    if($('adot'))$('adot').className='dot';
+    stopPolling();
+    await refreshProjectData();
+  } else {
+    showRunActivity(v.pending ? 'waiting for approval' : 'running');
+  }
+}
+async function refreshPrepState(force=false){
+  if (!P || prepRefreshBusy) return;
+  prepRefreshBusy=true;
+  try {
+    const next=await api(`/api/project/${P.code}/prep-state`);
+    if(next.error || (!force && next.revision===prepLiveRevision)) return;
+    prepLiveRevision=next.revision||'';
+    P.strategy_files=next.strategy_files||[];
+    P.prep=next.prep||[];
+    P.prep_staging=next.prep_staging||[];
+    P.prep_progress=next.prep_progress||{};
+    prepState.cache={};
+    updatePrepChrome();
+    if(tab==='prep' && $('tabBody')){
+      const scroll=$('tabBody').scrollTop;
+      renderPrep($('tabBody'));
+      $('tabBody').scrollTop=scroll;
+    }
+  } finally { prepRefreshBusy=false; }
+}
+function renderApproval(v){
+  const dock = $('approvalDock');
+  if (v.pending && dock){
+    dock.innerHTML = `<div class="apCard">
+      <strong style="color:#bba7ff">⚠ Approval required</strong>
+      <div class="muted">${esc(v.pending.action)} — ${esc(v.pending.target)}</div>
+      <pre>${esc(v.pending.content)}</pre>
+      <button class="send" onclick="decide(true)">Approve exact action</button>
+      <button class="deny" onclick="decide(false)">Deny</button></div>`;
+  } else if (dock) dock.innerHTML='';
+}
+async function refreshProjectData(){
+  S = await api('/api/state');
+  updateBackendBadge();
+  if (!P) return;
+  const code = P.code;
+  const next = await api('/api/project/'+code);
+  if (next.error) return;
+  P = next;
+  prepLiveRevision='';
+  prepState.cache = {};   // a run may have rewritten artifacts — drop cached contents
+  prepState.selected = {}; // group assignments may have changed; choose newest active artifact
+  updateUniverseChrome();
+  updatePrepChrome();
+  renderRunList();
+  renderTab();
+}
+async function decide(approve){
+  if (!currentRid) return;
+  await post(`/api/runs/${currentRid}/decision`, {approve});
+}
+
+/* ---------------- modal ---------------- */
+function showModal(html, cls=''){
+  const modal = $('modalBody');
+  modal.className = 'modal' + (cls ? ' ' + cls : '');
+  modal.innerHTML = html;
+  $('modalBg').style.display='flex';
+}
+function hideModal(){ if(!modalLocked) $('modalBg').style.display='none'; }
+$('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') hideModal(); });
+
+async function waitForRun(rid, onStatus){
+  while(true){
+    const run=await api(`/api/runs/${rid}?since=0`);
+    if (run.error) return {ok:false,message:run.error};
+    if (run.status!=='running'){
+      const ok=run.status==='done';
+      return {ok,message:ok?'Search universe ready':
+        `Universe update ${run.status}: ${run.summary||'see agent log'}`};
+    }
+    if(onStatus) onStatus(`Updating target employer universe ${animatedDots()}`);
+    await new Promise(resolve=>setTimeout(resolve,1000));
+  }
+}
+
+refresh();
+setInterval(()=>{ if (!currentRid && (location.hash||'#/projects')==='#/projects') refresh(); }, 8000);
+</script>
+</body>
+</html>

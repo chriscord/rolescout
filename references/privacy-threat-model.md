@@ -1,6 +1,6 @@
 # Privacy Threat Model
 
-RoleScout is local-storage software with optional remote model processing. “Local”
+RoleNavi is local-storage software with optional remote model processing. “Local”
 describes storage and runner-owned output, not where a selected provider processes
 an approved prompt packet.
 
@@ -41,5 +41,5 @@ an approved prompt packet.
 - Encryption at rest is not provided; OS disk encryption and account isolation remain
   the user’s responsibility.
 
-Use `rolescout privacy audit`, `rolescout clean --runtime`, and the dry-run-first
-`rolescout delete-person` command to inspect and enforce lifecycle boundaries.
+Use `rolenavi privacy audit`, `rolenavi clean --runtime`, and the dry-run-first
+`rolenavi delete-person` command to inspect and enforce lifecycle boundaries.

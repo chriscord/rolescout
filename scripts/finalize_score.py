@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Finalize a RoleScout score run with runner-owned deterministic writes.
+"""Finalize a RoleNavi score run with runner-owned deterministic writes.
 
 The score agent owns qualitative judgment: job groups and per-criterion
 `strategy/job-ratings.json`. This script owns the mechanical steps that must not
@@ -102,7 +102,7 @@ def _rating_note(entry: dict[str, Any]) -> str:
         parts = [str(v).strip() for v in rationale.values() if str(v).strip()]
         if parts:
             reason = reason or "; ".join(parts[:2])
-    return (reason or "Scored by RoleScout score workflow.")[:900]
+    return (reason or "Scored by RoleNavi score workflow.")[:900]
 
 
 def _criteria_names(project: Path) -> list[str]:
@@ -122,7 +122,7 @@ def _fallback_rating(job_id: str, row: dict[str, str], criteria: list[str]) -> d
     company = str(row.get("company", "")).strip() or "Unknown company"
     reason = (
         "Deterministic fallback: no batch evaluator rating was returned for this "
-        "visible row, so RoleScout parked it low instead of leaving the UI unscored."
+        "visible row, so RoleNavi parked it low instead of leaving the UI unscored."
     )
     return {
         "job_id": job_id,
@@ -208,7 +208,7 @@ def _priority_overrides(project: Path) -> dict[str, str]:
 
 def _summary_payload(project: Path, **items: Any) -> dict[str, Any]:
     payload = {
-        "schema": "rolescout-score-finalize-summary-v1",
+        "schema": "rolenavi-score-finalize-summary-v1",
         "generated_at": _now(),
         "project": project.name,
     }
@@ -444,7 +444,7 @@ def finalize(project: Path) -> tuple[int, dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Finalize RoleScout score artifacts and store updates.")
+    parser = argparse.ArgumentParser(description="Finalize RoleNavi score artifacts and store updates.")
     parser.add_argument("project", type=Path, nargs="?")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

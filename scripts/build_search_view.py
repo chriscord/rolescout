@@ -37,7 +37,7 @@ from location_normalize import (  # noqa: E402
     normalize_location_value,
 )
 from normalize_job_url import canonicalize as canonicalize_job_url  # noqa: E402
-from rolescout import project_meta  # noqa: E402
+from rolenavi import project_meta  # noqa: E402
 
 
 REGION_COUNTRIES = {
@@ -181,7 +181,7 @@ def default_filter_plan(project: Path) -> dict[str, Any]:
     target_level = str(meta.get("target_level", ""))
     negative_terms = _default_negative_level_terms(target_level)
     return {
-        "schema": "rolescout-search-view-filter-plan-v1",
+        "schema": "rolenavi-search-view-filter-plan-v1",
         "generated_at": _now_utc(),
         "source": "deterministic_default",
         "preference_revision": int(meta.get("preference_revision", 0) or 0),
@@ -286,7 +286,7 @@ def _load_or_create_plan(project: Path, plan_path: Path | None = None) -> dict[s
     plan = _read_json(path, {})
     current_fingerprint = project_meta.preference_fingerprint(project)
     if (isinstance(plan, dict)
-            and plan.get("schema") == "rolescout-search-view-filter-plan-v1"
+            and plan.get("schema") == "rolenavi-search-view-filter-plan-v1"
             and plan.get("preference_fingerprint") == current_fingerprint):
         plan, changed = _sanitize_filter_plan(project, plan)
         if changed:
@@ -469,7 +469,7 @@ def build_view(project: Path, plan_path: Path | None = None) -> dict[str, Any]:
         else:
             os.environ["RECRUITING_PROJECT_DIR"] = old_project
     summary = {
-        "schema": "rolescout-search-view-summary-v1",
+        "schema": "rolenavi-search-view-summary-v1",
         "generated_at": _now_utc(),
         "project": project.name,
         "plan_source": plan.get("source", ""),
@@ -480,7 +480,7 @@ def build_view(project: Path, plan_path: Path | None = None) -> dict[str, Any]:
     }
     _write_json(project / "targets" / "search-view-summary.json", summary)
     _write_json(project / "targets" / "search-view-exclusions.json", {
-        "schema": "rolescout-search-view-exclusions-v1",
+        "schema": "rolenavi-search-view-exclusions-v1",
         "generated_at": summary["generated_at"],
         "excluded": excluded[:5000],
     })

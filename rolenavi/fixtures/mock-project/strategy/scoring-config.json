@@ -1,0 +1,9 @@
+{
+  "schema": "rolenavi-scoring-config-v1",
+  "notes": "Synthetic fixture configuration for mock runs only.",
+  "weights": {
+    "role_fit": 1,
+    "location_fit": 1,
+    "seniority_fit": 1
+  }
+}

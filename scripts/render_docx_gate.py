@@ -46,11 +46,11 @@ def _word_executable() -> str:
 def _word_page_counts(paths: list[Path]) -> dict[str, int]:
     """Use installed Word's pagination engine without saving or mutating files."""
     env = dict(os.environ)
-    env["ROLESCOUT_DOCX_PATHS"] = json.dumps(
+    env["ROLENAVI_DOCX_PATHS"] = json.dumps(
         [str(path.resolve()) for path in paths], ensure_ascii=False)
     command = r'''
 $ErrorActionPreference = "Stop"
-$paths = [Environment]::GetEnvironmentVariable("ROLESCOUT_DOCX_PATHS") |
+$paths = [Environment]::GetEnvironmentVariable("ROLENAVI_DOCX_PATHS") |
   ConvertFrom-Json
 $word = $null
 $results = @{}

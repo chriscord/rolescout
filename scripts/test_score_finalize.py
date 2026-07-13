@@ -23,7 +23,7 @@ SCRIPTS = ROOT / "scripts"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from rolescout.runner import workflows  # noqa: E402
+from rolenavi.runner import workflows  # noqa: E402
 
 
 class FakeCtx:
@@ -185,7 +185,7 @@ def main() -> int:
         print("FAIL: invalid nested evaluator rating was accepted", file=sys.stderr)
         return 1
 
-    with tempfile.TemporaryDirectory(prefix="rolescout-score-snapshot-") as td:
+    with tempfile.TemporaryDirectory(prefix="rolenavi-score-snapshot-") as td:
         snapshot_project = Path(td)
         strategy = snapshot_project / "strategy"
         strategy.mkdir()
@@ -202,11 +202,11 @@ def main() -> int:
             print("FAIL: completed score ratings did not replace the stale snapshot", file=sys.stderr)
             return 1
 
-    with tempfile.TemporaryDirectory(prefix="rolescout-score-test-") as td:
+    with tempfile.TemporaryDirectory(prefix="rolenavi-score-test-") as td:
         project = Path(td) / "projects" / "tester--score"
-        shutil.copytree(ROOT / "rolescout" / "fixtures" / "mock-project", project)
+        shutil.copytree(ROOT / "rolenavi" / "fixtures" / "mock-project", project)
         artifact_payload = {
-            "schema": "rolescout-artifact-output-v1",
+            "schema": "rolenavi-artifact-output-v1",
             "artifacts": [{
                 "path": "linkedin/example/linkedin-review.md",
                 "text": (
@@ -234,7 +234,7 @@ def main() -> int:
         if not workflows._materialize_runner_artifact_output(FakeCtx(project), {
             "events": [{
                 "type": "result",
-                "content": "ROLESCOUT_ARTIFACT_OUTPUT_JSON:\n" + json.dumps(artifact_payload),
+                "content": "ROLENAVI_ARTIFACT_OUTPUT_JSON:\n" + json.dumps(artifact_payload),
             }],
         }):
             print("FAIL: runner artifact output was not materialized", file=sys.stderr)
@@ -251,7 +251,7 @@ def main() -> int:
             print(linkedin_validation.stdout + linkedin_validation.stderr, file=sys.stderr)
             return 1
         interview_payload = {
-            "schema": "rolescout-artifact-output-v1",
+            "schema": "rolenavi-artifact-output-v1",
             "artifacts": [{
                 "path": "interviews/story-bank.json",
                 "json": {
@@ -277,7 +277,7 @@ def main() -> int:
         if not workflows._materialize_runner_artifact_output(interview_ctx, {
             "events": [{
                 "type": "result",
-                "content": "ROLESCOUT_ARTIFACT_OUTPUT_JSON:\n" + json.dumps(interview_payload),
+                "content": "ROLENAVI_ARTIFACT_OUTPUT_JSON:\n" + json.dumps(interview_payload),
             }],
         }):
             print("FAIL: runner interview artifact output was not materialized", file=sys.stderr)
@@ -292,7 +292,7 @@ def main() -> int:
             return 1
         scoped_ctx = FakeCtx(project)
         scoped_payload = {
-            "schema": "rolescout-artifact-output-v1",
+            "schema": "rolenavi-artifact-output-v1",
             "artifacts": [{
                 "path": "interviews/wrong-role/prep-notes.md",
                 "text": _minimal_interview_notes(),
@@ -305,7 +305,7 @@ def main() -> int:
         workflows._materialize_runner_artifact_output(scoped_ctx, {
             "events": [{
                 "type": "result",
-                "content": "ROLESCOUT_ARTIFACT_OUTPUT_JSON:\n" + json.dumps(scoped_payload),
+                "content": "ROLENAVI_ARTIFACT_OUTPUT_JSON:\n" + json.dumps(scoped_payload),
             }],
         }, allowed_paths={"interviews/expected-role/prep-notes.md"})
         if (project / "interviews" / "wrong-role" / "prep-notes.md").exists():
@@ -339,7 +339,7 @@ def main() -> int:
             print(seed.stdout + seed.stderr, file=sys.stderr)
             return 1
         score_payload = {
-            "schema": "rolescout-score-output-v1",
+            "schema": "rolenavi-score-output-v1",
             "job_groups": [{
                 "slug": "strategy-bd",
                 "markdown": "# Target Group: Strategy BD (strategy-bd)\n\n## Roles in group\nexample",

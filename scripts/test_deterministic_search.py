@@ -2,7 +2,7 @@
 """Focused self-test for deterministic search.
 
 Uses only stdlib and a temporary project with a local HTTP server. It exercises
-the end-to-end path without mutating a real RoleScout project or using the
+the end-to-end path without mutating a real RoleNavi project or using the
 network.
 """
 
@@ -24,9 +24,9 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import build_search_view
-from rolescout import core, project_meta
-from rolescout.runner.workflows import run_workflow
-from rolescout.search.deterministic import _company_set_fingerprint, _infer_location_from_jd
+from rolenavi import core, project_meta
+from rolenavi.runner.workflows import run_workflow
+from rolenavi.search.deterministic import _company_set_fingerprint, _infer_location_from_jd
 
 
 JD = """
@@ -210,9 +210,9 @@ def main() -> int:
         }
     }
     sanitized, _ = build_search_view._sanitize_filter_plan(
-        project=ROOT / "rolescout" / "fixtures" / "mock-project",
+        project=ROOT / "rolenavi" / "fixtures" / "mock-project",
         plan={
-            "schema": "rolescout-search-view-filter-plan-v1",
+            "schema": "rolenavi-search-view-filter-plan-v1",
             "target_level": "senior manager, lead",
             "target_locations": ["San Francisco"],
             "location_filter": view_plan["location_filter"],
@@ -230,9 +230,9 @@ def main() -> int:
         print(f"FAIL: executive operations title should not be excluded: {reason}", file=sys.stderr)
         return 1
 
-    with tempfile.TemporaryDirectory(prefix="rolescout-search-test-") as td:
+    with tempfile.TemporaryDirectory(prefix="rolenavi-search-test-") as td:
         project = Path(td) / "projects" / "tester--strategy"
-        shutil.copytree(ROOT / "rolescout" / "fixtures" / "mock-project", project)
+        shutil.copytree(ROOT / "rolenavi" / "fixtures" / "mock-project", project)
         _write(project / "project-meta.json", {
             "target_locations": ["San Francisco"],
             "focus_role": "Strategy, Business Development",

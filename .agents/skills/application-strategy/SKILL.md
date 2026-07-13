@@ -10,7 +10,7 @@ instruction file is the primary artifact: it tells the user exactly how to
 apply, what materials to use, which fields require judgment, and what to record
 afterward.
 
-Public RoleScout does not submit applications, send messages, upload files,
+Public RoleNavi does not submit applications, send messages, upload files,
 create accounts, accept terms, schedule anything, or click final submit. This
 skill produces instructions and tracker rows only.
 
@@ -87,7 +87,7 @@ For each prepared application, upsert a tracker row with:
 
 - `application_id`: `app--<job_id>`
 - `job_id`, `company`, `title`
-- `status`: `to_apply` unless the user already applied outside RoleScout
+- `status`: `to_apply` unless the user already applied outside RoleNavi
 - `resume_version`: recommended local resume path when available
 - `next_action`: manual submission using the instruction file
 - `next_action_due`: a concrete date chosen from urgency and user context

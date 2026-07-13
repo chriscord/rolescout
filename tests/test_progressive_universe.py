@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rolescout import project_meta, universe
+from rolenavi import project_meta, universe
 
 
 def _project(tmp_path: Path) -> Path:
@@ -43,7 +43,7 @@ def test_single_coordinator_merges_typed_proposals_and_rejects_stale(tmp_path: P
     project = _project(tmp_path)
     revision = project_meta.load(project)["preference_revision"]
     proposals = [{
-        "schema": "rolescout-universe-proposal-v1",
+        "schema": "rolenavi-universe-proposal-v1",
         "preference_revision": revision,
         "input": "Example Seed",
         "kind": "seed_peer_expansion",
@@ -58,7 +58,7 @@ def test_single_coordinator_merges_typed_proposals_and_rejects_stale(tmp_path: P
         "excluded": [],
         "omissions": [],
     }, {
-        "schema": "rolescout-universe-proposal-v1",
+        "schema": "rolenavi-universe-proposal-v1",
         "preference_revision": revision,
         "input": "AI or data startups",
         "kind": "descriptor_expansion",

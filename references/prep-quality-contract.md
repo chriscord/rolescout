@@ -1,6 +1,6 @@
 # Prep Quality Contract
 
-Version: `rolescout-prep-quality-v1`
+Version: `rolenavi-prep-quality-v1`
 
 This document is the shared contract for `prep-strategy`, `prep-resume`,
 `prep-linkedin`, story-bank generation, and `prep-interview`. Skill instructions,
@@ -66,9 +66,9 @@ The runner extracts the latest user-provided resume once per run to
 Each pursue/conditional group must produce a target brief, baseline score, tailored draft,
 reasons map, validation report, and a one-page DOCX after validation.
 
-The runner packet provides the exact `rolescout-resume-group-artifacts-v1`
+The runner packet provides the exact `rolenavi-resume-group-artifacts-v1`
 machine-readable contract. `target-brief.json` uses schema
-`rolescout-resume-target-brief-v1`, one top-level `requirements` array, and only
+`rolenavi-resume-target-brief-v1`, one top-level `requirements` array, and only
 `must`/`preferred` priorities. `target-brief.json` and `reasons.json` are typed JSON
 artifact values, not JSON encoded inside a text field. A structural or content gate
 failure receives up to two bounded repairs with exact validator feedback and the

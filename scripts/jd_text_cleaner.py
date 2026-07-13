@@ -99,7 +99,7 @@ LICENSE_RE = re.compile(
     r"admitted to (?:the )?bar|cpa|chartered accountant)\b", re.I
 )
 
-REQUIREMENT_ATOMS_SCHEMA = "rolescout-requirement-atoms-v9"
+REQUIREMENT_ATOMS_SCHEMA = "rolenavi-requirement-atoms-v9"
 
 
 def clean_jd_text(value: str, *, limit: int | None = None) -> str:

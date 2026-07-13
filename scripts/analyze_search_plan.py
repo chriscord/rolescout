@@ -349,7 +349,7 @@ def _print_text(report: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
-    parser = argparse.ArgumentParser(description="Analyze RoleScout search plan readiness.")
+    parser = argparse.ArgumentParser(description="Analyze RoleNavi search plan readiness.")
     parser.add_argument("project", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

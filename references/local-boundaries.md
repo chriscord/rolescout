@@ -1,6 +1,6 @@
 # Local output and provider-processing boundaries
 
-Public RoleScout produces local research, prioritization, preparation, and tracker
+Public RoleNavi produces local research, prioritization, preparation, and tracker
 artifacts. It does not execute recruiting actions outside the user's machine.
 
 ## Not supported in the public runtime
@@ -20,9 +20,9 @@ draft text, or tracker notes only.
 
 ## Live model processing
 
-RoleScout stores source files and generated artifacts locally. A live synthesis
+RoleNavi stores source files and generated artifacts locally. A live synthesis
 run still sends a minimized workflow packet to the selected model provider.
-Before the first live run, RoleScout displays that provider disclosure and it
+Before the first live run, RoleNavi displays that provider disclosure and it
 prints the workflow's data classes on every run.
 
 Target compensation (`comp_range`) is a search preference and may be sent for

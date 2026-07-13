@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a compact Word resume from a validator-clean Markdown draft.
 
-Uses only the standard library so RoleScout does not depend on a global
+Uses only the standard library so RoleNavi does not depend on a global
 python-docx install. The output uses A4 geometry, Times New Roman, real Word
 bullet numbering, and bordered section headings.
 """

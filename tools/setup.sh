@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command setup: find Python 3.10+, create .venv, install RoleScout editable.
+# One-command setup: find Python 3.10+, create .venv, install RoleNavi editable.
 # Exists because macOS's default python3 is often the Xcode CLT 3.9 with an old pip
 # that can't read pyproject metadata (installs as "UNKNOWN", then fails on perms).
 set -u
@@ -25,11 +25,11 @@ echo "using $PY ($("$PY" -V 2>&1))"
 "$PY" -m venv .venv || { echo "ERROR: venv creation failed"; exit 1; }
 ./.venv/bin/pip install -q --upgrade pip setuptools || { echo "ERROR: pip upgrade failed"; exit 1; }
 ./.venv/bin/pip install -q -e ".[xlsx]" || { echo "ERROR: install failed"; exit 1; }
-./.venv/bin/rolescout --version || exit 1
+./.venv/bin/rolenavi --version || exit 1
 
 echo
 echo "OK — installed into .venv (system Python untouched)"
 echo "  activate:  source .venv/bin/activate"
-echo "  then:      rolescout doctor"
+echo "  then:      rolenavi doctor"
 echo "  live runs: install Codex CLI, then run: codex login"
-echo "  other CLIs: rolescout run search --provider cli --llm-cmd 'your-agent {prompt}'"
+echo "  other CLIs: rolenavi run search --provider cli --llm-cmd 'your-agent {prompt}'"

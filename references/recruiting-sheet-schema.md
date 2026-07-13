@@ -8,8 +8,8 @@ Each search project has its own store (see `references/project-structure.md`); s
 
 1. **SQLite — operational source of truth**: public job facts and the current UI selection live in `<project>/data/public-opportunities.db` (`job_list`, `job_visibility`); private application/contact/status facts live in `<project>/private/pipeline.db` (`tracker`). `python scripts/init_db.py` creates the stores and imports a legacy `data/recruiting.db` once.
 2. **Explicit exports — never operational inputs**:
-   - `rolescout export --public` writes `<project>/exports/public-opportunities.csv`.
-   - `rolescout export --private` writes `<project>/private/exports/pipeline.csv`.
+   - `rolenavi export --public` writes `<project>/exports/public-opportunities.csv`.
+   - `rolenavi export --private` writes `<project>/private/exports/pipeline.csv`.
    - `--xlsx` creates a separate workbook for the selected sensitivity class. A combined workbook is never created by default. Every export has a sensitivity/revision manifest and is atomically replaced.
 3. **External sheet (optional, read-only)** — the user may keep a Google Sheet copy (ID/URL in the project's `project.json` `external_sheet` field). With only read access (Drive connector), use it to reconcile the user's manual edits before writing locally; offer changed rows in paste-ready form afterward. If a write-capable Sheets connector appears, verify headers with `ensure_recruiting_sheet.py --check-headers` before any write.
 

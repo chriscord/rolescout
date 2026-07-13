@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from rolescout.paths import RoleScoutError
-from rolescout.web import server as web_server
-from rolescout.web.server import MAX_JSON_BODY, serve
+from rolenavi.paths import RoleNaviError
+from rolenavi.web import server as web_server
+from rolenavi.web.server import MAX_JSON_BODY, serve
 
 
 def _request(url: str, *, token: str = "", host: str = "", origin: str = "",
              data: bytes | None = None):
     headers = {}
     if token:
-        headers["X-RoleScout-Token"] = token
+        headers["X-RoleNavi-Token"] = token
     if host:
         headers["Host"] = host
     if origin:
@@ -62,7 +62,7 @@ def test_web_bootstraps_root_but_requires_api_token_and_rejects_host_origin_and_
                 assert error.code == 403
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         connection.putrequest("POST", "/api/run")
-        connection.putheader("X-RoleScout-Token", server.session_token)
+        connection.putheader("X-RoleNavi-Token", server.session_token)
         connection.putheader("Content-Type", "application/json")
         connection.putheader("Content-Length", str(MAX_JSON_BODY + 1))
         connection.endheaders()
@@ -78,7 +78,7 @@ def test_web_server_rejects_a_second_listener_on_the_same_port():
     first = serve(0)
     port = first.server_address[1]
     try:
-        with pytest.raises(RoleScoutError, match="already in use"):
+        with pytest.raises(RoleNaviError, match="already in use"):
             serve(port)
     finally:
         first.server_close()

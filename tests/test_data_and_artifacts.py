@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from rolescout.repositories import artifacts
+from rolenavi.repositories import artifacts
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"

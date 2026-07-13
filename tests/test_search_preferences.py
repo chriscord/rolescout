@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from rolescout import project_meta
-from rolescout.search import deterministic
+from rolenavi import project_meta
+from rolenavi.search import deterministic
 
 
 def _project(tmp_path: Path) -> Path:

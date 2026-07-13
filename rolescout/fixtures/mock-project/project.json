@@ -1,9 +1,0 @@
-{
-  "person": "example-candidate",
-  "focus": "example-workflow",
-  "profile_dir": "rolescout/fixtures/mock-project/profile",
-  "created_at": "2026-07-09",
-  "status": "fixture",
-  "external_sheet": null,
-  "note": "Synthetic fixture project for mock runs. Copied to a disposable workdir per run; never used as a real project."
-}

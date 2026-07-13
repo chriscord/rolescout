@@ -20,7 +20,7 @@ def package_bytes(skill_dir: Path) -> bytes:
     source = ((skill_dir / "SKILL.md").read_text(encoding="utf-8")
               .replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
     manifest = json.dumps({
-        "schema": "rolescout-skill-package-v1",
+        "schema": "rolenavi-skill-package-v1",
         "skill": name,
         "source_sha256": hashlib.sha256(source).hexdigest(),
     }, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"

@@ -26,7 +26,7 @@ Read before drafting:
 - `<project>/targets/job-groups/<group>.md`
 - JD snapshots for every focused job in the group under `<project>/targets/jobs/*.json`
 
-If candidate profile or evidence map is missing, stop and tell the user to run `rolescout run profile-intake --person <person>` first. Tailoring without an evidence map is a fabrication risk; this skill consumes the profile and evidence map, it does not create them.
+If candidate profile or evidence map is missing, stop and tell the user to run `rolenavi run profile-intake --person <person>` first. Tailoring without an evidence map is a fabrication risk; this skill consumes the profile and evidence map, it does not create them.
 These three profile/policy paths are a fixed contract; do not discover substitutes elsewhere.
 
 ## Step 0 - Cross-source recency & discrepancy check
@@ -45,7 +45,7 @@ For each active group, write `resumes/<group>/target-brief.json` before writing 
 
 ```json
 {
-  "schema": "rolescout-resume-target-brief-v1",
+  "schema": "rolenavi-resume-target-brief-v1",
   "group": "strategy-ops-gtm",
   "source_job_ids": ["..."],
   "positioning_angle": "one sentence from the strategy doc, adjusted to the JDs",

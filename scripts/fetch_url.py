@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch a public URL with the Python standard library — no third-party install.
 
-Why this exists: runs must not assume `requests` is available (RoleScout ships
+Why this exists: runs must not assume `requests` is available (RoleNavi ships
 zero runtime dependencies), and agents should not hand-roll a fetch script every
 run. Use this for plain public JSON/HTML fetches (ATS boards, careers APIs):
 
@@ -32,7 +32,7 @@ for _s in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-DEFAULT_UA = ("Mozilla/5.0 (compatible; RoleScout/0.1; +local-first job-search "
+DEFAULT_UA = ("Mozilla/5.0 (compatible; RoleNavi/0.1; +local-first job-search "
               "research; reads public pages only)")
 DEFAULT_MAX_STDOUT_BYTES = 65536
 
@@ -82,7 +82,7 @@ def _bounded_body(body: str, max_bytes: int) -> tuple[str, bool]:
     if max_bytes <= 0 or len(encoded) <= max_bytes:
         return body, False
     trimmed = encoded[:max_bytes].decode("utf-8", errors="replace")
-    return trimmed + "\n[rolescout fetch_url: output truncated; use --out for full body]\n", True
+    return trimmed + "\n[rolenavi fetch_url: output truncated; use --out for full body]\n", True
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-from rolescout.interview_paths import role_slug
+from rolenavi.interview_paths import role_slug
 
 REQUIRED_SECTIONS = [
     "Self Introduction",

@@ -17,9 +17,9 @@ def run(*args: str) -> int:
 
 def main() -> int:
     commands = [
-        (sys.executable, "-m", "compileall", "-q", "rolescout", "scripts", "tests"),
+        (sys.executable, "-m", "compileall", "-q", "rolenavi", "scripts", "tests"),
         (sys.executable, "-m", "pytest", "-q"),
-        (sys.executable, "-m", "ruff", "check", "rolescout"),
+        (sys.executable, "-m", "ruff", "check", "rolenavi"),
         (sys.executable, "scripts/test_deterministic_search.py"),
         (sys.executable, "scripts/test_score_finalize.py"),
         (sys.executable, "scripts/build_skills.py", "--check"),
@@ -28,7 +28,7 @@ def main() -> int:
     for command in commands:
         if run(*command):
             return 1
-    print("PASS: RoleScout release gate")
+    print("PASS: RoleNavi release gate")
     return 0
 
 

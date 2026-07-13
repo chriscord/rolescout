@@ -4,12 +4,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-from rolescout import decision_policy
-from rolescout.llm.codex import CodexProvider
-from rolescout.llm.prompts import workflow_prompt_with_audit
-from rolescout.llm.runtime import provider_environment, staged_working_directory
-from rolescout.privacy.prompt_gateway import prepare_prompt_context
-from rolescout.telemetry import store as telemetry
+from rolenavi import decision_policy
+from rolenavi.llm.codex import CodexProvider
+from rolenavi.llm.prompts import workflow_prompt_with_audit
+from rolenavi.llm.runtime import provider_environment, staged_working_directory
+from rolenavi.privacy.prompt_gateway import prepare_prompt_context
+from rolenavi.telemetry import store as telemetry
 
 
 def test_prompt_gateway_deny_by_default_and_target_comp_allowed():
@@ -61,9 +61,9 @@ def test_canonical_decision_policy_is_model_allowed_without_profile_block(tmp_pa
 
 
 def test_provider_environment_does_not_inherit_secret(monkeypatch):
-    monkeypatch.setenv("ROLESCOUT_SECRET_SENTINEL", "do-not-inherit")
+    monkeypatch.setenv("ROLENAVI_SECRET_SENTINEL", "do-not-inherit")
     env = provider_environment()
-    assert "ROLESCOUT_SECRET_SENTINEL" not in env
+    assert "ROLENAVI_SECRET_SENTINEL" not in env
     assert env["PYTHONUTF8"] == "1"
 
 

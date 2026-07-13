@@ -84,7 +84,7 @@ CAPTURE_JS = r"""
 
 
 def home_dir() -> Path:
-    p = Path(os.environ.get("ROLESCOUT_HOME", Path.home() / ".rolescout")).expanduser()
+    p = Path(os.environ.get("ROLENAVI_HOME", Path.home() / ".rolenavi")).expanduser()
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -104,7 +104,7 @@ def playwright_chromium() -> str:
 
 @functools.lru_cache(maxsize=1)
 def find_chrome() -> str:
-    for env in ("ROLESCOUT_CHROME", "CHROME_BIN", "GOOGLE_CHROME_SHIM"):
+    for env in ("ROLENAVI_CHROME", "CHROME_BIN", "GOOGLE_CHROME_SHIM"):
         val = os.environ.get(env)
         if val and Path(val).exists():
             return val
@@ -137,7 +137,7 @@ def find_chrome() -> str:
 
 
 def browser_session_dir() -> Path:
-    override = os.environ.get("ROLESCOUT_LINKEDIN_BROWSER_PROFILE", "").strip()
+    override = os.environ.get("ROLENAVI_LINKEDIN_BROWSER_PROFILE", "").strip()
     if override:
         path = Path(override).expanduser()
     else:

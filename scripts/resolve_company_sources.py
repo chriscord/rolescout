@@ -66,7 +66,7 @@ def _parse_scalar(value: str):
 def load_registered_registry(registry_path: Path | None = None) -> dict[str, dict]:
     """Parse maintained company career entries from the plain YAML registry.
 
-    RoleScout intentionally avoids a YAML runtime dependency. The registry shape
+    RoleNavi intentionally avoids a YAML runtime dependency. The registry shape
     is constrained enough that a small section parser is safer than requiring
     agents to parse the same file with ad-hoc Python. Returns both
     self_hosted_careers and major_company_careers entries.

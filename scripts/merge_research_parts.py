@@ -109,7 +109,7 @@ def _flatten_candidates(candidates: list, *, part_name: str) -> tuple[list[dict]
 
 def _load_part(path: Path) -> dict:
     # Shards can be written by Windows tools that emit UTF-8 with BOM. Accept it
-    # at the merge boundary and keep RoleScout-owned outputs no-BOM UTF-8.
+    # at the merge boundary and keep RoleNavi-owned outputs no-BOM UTF-8.
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if isinstance(data, list):
         return {"queries": [], "candidates": data}

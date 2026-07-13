@@ -1,5 +1,5 @@
 {
-  "schema": "rolescout-scoring-policy-v1",
+  "schema": "rolenavi-scoring-policy-v1",
   "version": 1,
   "role_fit_anchors": {
     "5": "Direct target function with all central must-haves evidenced.",

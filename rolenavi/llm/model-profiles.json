@@ -1,0 +1,149 @@
+{
+  "version": 6,
+  "_notes": {
+    "purpose": "RoleNavi pins Codex model and reasoning effort per workflow instead of inheriting the user's Codex CLI defaults.",
+    "edit": "Change this file after it is copied to ~/.rolenavi/model-profiles.json, or set ROLENAVI_MODEL_PROFILES to another JSON file.",
+    "effort_values": "minimal, low, medium, high, xhigh",
+    "override_env": "For one run, set ROLENAVI_CODEX_MODEL and/or ROLENAVI_CODEX_EFFORT."
+  },
+  "codex": {
+    "default": {
+      "model": "gpt-5.5",
+      "effort": "medium"
+    },
+    "workflows": {
+      "profile-intake": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "capability-ledger": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "search": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "score": {
+        "model": "gpt-5.5",
+        "effort": "medium",
+        "fallbacks": [
+          {
+            "model": "gpt-5.4",
+            "effort": "high"
+          }
+        ]
+      },
+      "prep": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-strategy": {
+        "model": "gpt-5.5",
+        "effort": "xhigh"
+      },
+      "prep-resume": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-resume-repair": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "prep-linkedin": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-linkedin-repair": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "prep-interview": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "story-bank": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "apply": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "complete": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      }
+    }
+  },
+  "external_cli": {
+    "default": {
+      "model": "gpt-5.5",
+      "effort": "medium"
+    },
+    "workflows": {
+      "profile-intake": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "capability-ledger": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "search": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "score": {
+        "model": "gpt-5.5",
+        "effort": "medium",
+        "fallbacks": [
+          {
+            "model": "gpt-5.4",
+            "effort": "high"
+          }
+        ]
+      },
+      "prep": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-strategy": {
+        "model": "gpt-5.5",
+        "effort": "xhigh"
+      },
+      "prep-resume": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-resume-repair": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "prep-linkedin": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "prep-linkedin-repair": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      },
+      "prep-interview": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "story-bank": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "apply": {
+        "model": "gpt-5.5",
+        "effort": "high"
+      },
+      "complete": {
+        "model": "gpt-5.5",
+        "effort": "medium"
+      }
+    }
+  }
+}

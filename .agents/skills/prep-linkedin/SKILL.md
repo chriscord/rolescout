@@ -17,7 +17,7 @@ Do not generate reviews from local profile/resume/evidence alone. Those files ar
 
 Accepted current-source inputs:
 
-- `profiles/<person>/linkedin-current.md` produced fresh by the RoleScout runner during this same run.
+- `profiles/<person>/linkedin-current.md` produced fresh by the RoleNavi runner during this same run.
 - `profiles/<person>/linkedin-current.md` imported from an official/user-provided LinkedIn export or paste during profile intake.
 
 The runner performs fresh capture before the agent starts. The agent must not perform capture again:

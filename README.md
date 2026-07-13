@@ -1,6 +1,6 @@
 <div align="center">
 
-# ☕ RoleScout
+# ☕ RoleNavi
 
 **A local-first AI tool for job-search research and application preparation.**
 
@@ -15,62 +15,59 @@ English | [한국어](README.ko.md) | [日本語](README.ja.md) | [繁體中文]
 
 ---
 
-<p align="center">
-  <img src="assets/demo.gif" alt="RoleScout workflow demo" width="960">
-</p>
-
 ## Overview
 
-RoleScout helps people preparing for a career move save time on job-search research and application preparation.
+RoleNavi helps people preparing for a career move save time on job-search research and application preparation.
 
-RoleScout does not run a hosted backend or collect career data on a RoleScout server. Source files, stores, and generated materials stay on your device. A live synthesis run still sends a minimized workflow packet to the selected model provider through a CLI you authenticate, with Codex as the default. Codex synthesis starts in a disposable staging directory with read-only sandboxing, shell/unified-exec/apps/web search disabled, no transcript history, and an allowlisted process environment. RoleScout shows a provider notice before the first live run and reports the data classes used by each workflow. Contacts, application state, compensation history, work authorization, LinkedIn URLs, and unrelated private notes are excluded from model prompts by default; target compensation is a model-allowed search preference.
+RoleNavi does not run a hosted backend or collect career data on a RoleNavi server. Source files, stores, and generated materials stay on your device. A live synthesis run still sends a minimized workflow packet to the selected model provider through a CLI you authenticate, with Codex as the default. Codex synthesis starts in a disposable staging directory with read-only sandboxing, shell/unified-exec/apps/web search disabled, no transcript history, and an allowlisted process environment. RoleNavi shows a provider notice before the first live run and reports the data classes used by each workflow. Contacts, application state, compensation history, work authorization, LinkedIn URLs, and unrelated private notes are excluded from model prompts by default; target compensation is a model-allowed search preference.
 
 The enforceable boundaries and residual risks are documented in
 [`references/privacy-threat-model.md`](references/privacy-threat-model.md).
 
-Enter target locations, example companies, and target level. RoleScout then researches relevant openings, organizes and summarizes them, scores fit, and helps you decide which positions are worth preparing for first.
+Enter target locations, example companies, and target level. RoleNavi then researches relevant openings, organizes and summarizes them, scores fit, and helps you decide which positions are worth preparing for first.
 
 ## How To Install
 
-Requirements:
+RoleNavi is designed for an active ChatGPT/Codex subscription. Its default live
+workflows use the locally authenticated Codex CLI, so connect the subscription
+after installation with `npm install -g @openai/codex` and `codex login`.
 
-- Git
-- Python 3.10 or newer
-- Node.js/npm for installing the Codex CLI
-- A ChatGPT/Codex account for live model runs
-
-Connect the default model CLI:
+### macOS
 
 ```bash
-npm install -g @openai/codex
-codex login
+curl -fsSL https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-macos.sh | bash
 ```
 
-macOS or Linux:
+### Linux
 
 ```bash
-git clone https://github.com/chriscord/rolescout
-cd rolescout
-./tools/setup.sh
-source .venv/bin/activate
+curl -fsSL https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-linux.sh | bash
 ```
 
-Windows PowerShell:
+### Windows PowerShell
 
 ```powershell
-git clone https://github.com/chriscord/rolescout
-cd rolescout
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip setuptools
-python -m pip install -e ".[xlsx]"
+irm https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-windows.ps1 | iex
 ```
+
+Each installer clones RoleNavi into `~/RoleNavi` (macOS/Windows) or
+`~/rolenavi` (Linux), creates `.venv`, installs the base spreadsheet-enabled
+setup, and verifies the `rolenavi` command. Set `ROLENAVI_INSTALL_DIR` before
+running an installer to choose another location.
+
+### Optional browser tooling for LinkedIn analysis
+
+For automated LinkedIn profile analysis, install either
+[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) or
+[Playwright](https://playwright.dev/docs/intro#installing-playwright). They are
+recommended, not required, and enable browser-based capture of current profile
+content when available.
 
 Optional render QA for resume DOCX files:
 
-RoleScout can generate resume DOCX files without these tools. Install them only
+RoleNavi can generate resume DOCX files without these tools. Install them only
 if you want visual render checks for one-page layout verification. Without them,
-RoleScout records render QA as blocked and still runs structural DOCX checks.
+RoleNavi records render QA as blocked and still runs structural DOCX checks.
 
 ```bash
 # Python package used by the render checker
@@ -112,10 +109,10 @@ sudo apt install python3.12 python3.12-venv
 winget install Python.Python.3.12
 ```
 
-Optional external CLI connection (developer-only; RoleScout cannot verify an arbitrary CLI's sandbox):
+Optional external CLI connection (developer-only; RoleNavi cannot verify an arbitrary CLI's sandbox):
 
 ```bash
-rolescout run search \
+rolenavi run search \
   --provider cli \
   --llm-name glm \
   --llm-cmd 'your-agent run --model {model} --effort {effort}'
@@ -123,35 +120,44 @@ rolescout run search \
 
 The prompt is sent through stdin. `{root}` and `{project}` resolve to the disposable staging directory; `{model}` and `{effort}` come from the model profile file. A `{prompt}` argv placeholder is rejected by default because process listings can expose packet content.
 
-Set `ROLESCOUT_ENABLE_UNSANDBOXED_CLI=1` only after reviewing the external
+Set `ROLENAVI_ENABLE_UNSANDBOXED_CLI=1` only after reviewing the external
 provider's filesystem and tool isolation. The process starts in a disposable
 staging directory with an allowlisted environment.
+
+> [!WARNING]
+> RoleNavi is tested with the Codex subscription connection. Other AI-agent
+> integrations use the experimental external-CLI adapter and have not been
+> tested or supported.
 
 ## Verify Installation
 
 ```bash
-rolescout --version
+rolenavi --version
 ```
 
 Expected output:
 
 ```text
-rolescout 0.1.0
+rolenavi 0.1.0
 ```
 
 Then run:
 
 ```bash
-rolescout doctor
+rolenavi doctor
 ```
 
 ## How To Use
 
 ```bash
-rolescout web
+rolenavi web
 ```
 
 The browser opens automatically at `http://127.0.0.1:8787`. The interface is loopback-only and is not hosted.
+
+For default live AI workflows, first connect your ChatGPT/Codex subscription with `codex login`. RoleNavi invokes that local Codex CLI; it does not require an API key.
+
+The workflow deliberately keeps people in control: **deterministic job search → agentic evaluation → choose focused positions → preparation → manual application**.
 
 1. **Profile — create this first.** Add your name, LinkedIn URL, and resume. Supported resume formats: **PDF, DOCX, Markdown (`.md`), `.txt`, or HTML**. Add supporting materials when useful. Saving the profile or uploading a resume starts `profile-intake` in the background: deterministic extraction builds a bounded source packet, then typed model output is materialized as `candidate-profile.md` and `evidence-map.md`. A LinkedIn URL is a local pointer only; current LinkedIn evidence must come from the supported import/capture path.
 
@@ -160,7 +166,7 @@ The browser opens automatically at `http://127.0.0.1:8787`. The interface is loo
 
 2. **Projects.** Create or select a project. Treat one project as one job-search and preparation session. Set the session preferences freely: example companies, target role, level, target location, compensation range, exclusions, and any other constraints that should guide the search.
 
-3. **Plan → capture → evaluate → finalize.** `opportunity-plan` is an optional bounded model phase that writes a validated company universe. `search` is deterministic capture from that universe (or declared seeds in seed-only mode), including URL/JD normalization and persistence. `score` sends compact captured-job batches for semantic evaluation, then deterministic finalization applies weights and writes scores. Star positions to register them as **focused** positions.
+3. **Plan → capture → evaluate → finalize.** `opportunity-plan` is an optional bounded model phase that writes a validated company universe. `search` is deterministic capture from that universe (or declared seeds in seed-only mode), including URL/JD normalization and persistence. `score` sends compact captured-job batches for semantic evaluation, then deterministic finalization applies weights and writes scores. This separates deterministic job search from agentic evaluation: agents evaluate captured evidence, but do not collect postings or decide whether to submit applications. Star positions to register them as **focused** positions.
 
    > [!IMPORTANT]
    > Prep commands require at least one focused position. This is intentional: they prepare strategy, resume, LinkedIn, and interview materials for positions you have chosen to pursue.
@@ -172,7 +178,7 @@ The browser opens automatically at `http://127.0.0.1:8787`. The interface is loo
    - **LinkedIn** (`prep-linkedin`) — Reviews the current LinkedIn profile and shows recommended changes as current → to-be updates.
    - **Interview** (`prep-interview`) — Analyzes the resume and target-position JDs to prepare likely questions and answer plans, a resume-based story bank, recent company/position news, and an industry/company glossary.
 
-5. **Apply.** Choose `apply`, then click **Run**. RoleScout creates tracker rows in the Applications tab for focused positions and generates application instructions for each position. For safety, it does **not** auto-apply. After you submit an application yourself, update the tracker status manually; the Jobs list reflects that status automatically.
+5. **Apply.** Choose `apply`, then click **Run**. RoleNavi creates tracker rows in the Applications tab for focused positions and generates application instructions for each position. For safety, it does **not** auto-apply. After you submit an application yourself, update the tracker status manually; the Jobs list reflects that status automatically.
 
 > [!NOTE]
 > Keep the terminal open while the web interface is running. The web interface is a local companion to the terminal process.
@@ -182,46 +188,46 @@ The browser opens automatically at `http://127.0.0.1:8787`. The interface is loo
 Every CLI command uses the active profile and project unless you pass `--project <code>`.
 
 ```bash
-rolescout init --person you --focus ai-product --locations "San Francisco"
-rolescout run profile-intake --person you
-rolescout run opportunity-plan
-rolescout run search
-rolescout run score
-rolescout run prep
-rolescout run prep-strategy
-rolescout run prep-resume
-rolescout run prep-linkedin
-rolescout run prep-interview
-rolescout run story-bank
-rolescout run apply
-rolescout export --public
-rolescout privacy audit
+rolenavi init --person you --focus ai-product --locations "San Francisco"
+rolenavi run profile-intake --person you
+rolenavi run opportunity-plan
+rolenavi run search
+rolenavi run score
+rolenavi run prep
+rolenavi run prep-strategy
+rolenavi run prep-resume
+rolenavi run prep-linkedin
+rolenavi run prep-interview
+rolenavi run story-bank
+rolenavi run apply
+rolenavi export --public
+rolenavi privacy audit
 ```
 
 | Command | Expected outcome |
 |---|---|
-| `rolescout init --person you --focus ai-product --locations "San Francisco"` | Creates or activates a profile/project pair. Use `--companies`, `--role`, `--level`, `--comp-range`, and `--negatives` to set project preferences from the command line. |
-| `rolescout run profile-intake --person you` | Builds or refreshes `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` from resume/materials and accepted LinkedIn current-source content. |
-| `rolescout run opportunity-plan` | Optionally creates a bounded, typed company universe from model-allowed target preferences. |
-| `rolescout run search` | Runs deterministic provider-first discovery, captures direct posting URLs/JD snapshots, writes the raw Jobs store, and builds the UI-visible Jobs view. It does not score by default. |
-| `rolescout run score` | Rates every current UI-visible Jobs row through runner-built compact batches, then the runner recomputes weighted scores and writes `fit_score`/`priority` back to the Jobs view. |
-| `rolescout run prep` | Runs strategy, resume, LinkedIn, and interview preparation for focused positions. |
-| `rolescout run prep-strategy` | Produces the grouped application strategy and priority plan only. |
-| `rolescout run prep-resume` | Produces targeted resume drafts for the focused job groups. |
-| `rolescout run prep-linkedin` | Produces LinkedIn current → to-be recommendations. |
-| `rolescout run prep-interview` | Produces interview packs and the story bank for focused positions. |
-| `rolescout run story-bank` | Rebuilds the shared resume-derived story bank independently. |
-| `rolescout run apply` | Creates application instructions and tracker rows for focused positions; no automatic submission. |
-| `rolescout export --public` / `--private` | Creates an explicit sensitivity-separated export and revision manifest. |
-| `rolescout privacy audit` | Reports local runtime/telemetry footprint without printing private contents. |
-| `rolescout clean --runtime` | Prints a dry-run retention manifest; add `--apply` to delete it. |
-| `rolescout delete-person --person <slug>` | Prints a dry-run profile/project deletion manifest; add `--apply` to delete. |
+| `rolenavi init --person you --focus ai-product --locations "San Francisco"` | Creates or activates a profile/project pair. Use `--companies`, `--role`, `--level`, `--comp-range`, and `--negatives` to set project preferences from the command line. |
+| `rolenavi run profile-intake --person you` | Builds or refreshes `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` from resume/materials and accepted LinkedIn current-source content. |
+| `rolenavi run opportunity-plan` | Optionally creates a bounded, typed company universe from model-allowed target preferences. |
+| `rolenavi run search` | Runs deterministic provider-first discovery, captures direct posting URLs/JD snapshots, writes the raw Jobs store, and builds the UI-visible Jobs view. It does not score by default. |
+| `rolenavi run score` | Rates every current UI-visible Jobs row through runner-built compact batches, then the runner recomputes weighted scores and writes `fit_score`/`priority` back to the Jobs view. |
+| `rolenavi run prep` | Runs strategy, resume, LinkedIn, and interview preparation for focused positions. |
+| `rolenavi run prep-strategy` | Produces the grouped application strategy and priority plan only. |
+| `rolenavi run prep-resume` | Produces targeted resume drafts for the focused job groups. |
+| `rolenavi run prep-linkedin` | Produces LinkedIn current → to-be recommendations. |
+| `rolenavi run prep-interview` | Produces interview packs and the story bank for focused positions. |
+| `rolenavi run story-bank` | Rebuilds the shared resume-derived story bank independently. |
+| `rolenavi run apply` | Creates application instructions and tracker rows for focused positions; no automatic submission. |
+| `rolenavi export --public` / `--private` | Creates an explicit sensitivity-separated export and revision manifest. |
+| `rolenavi privacy audit` | Reports local runtime/telemetry footprint without printing private contents. |
+| `rolenavi clean --runtime` | Prints a dry-run retention manifest; add `--apply` to delete it. |
+| `rolenavi delete-person --person <slug>` | Prints a dry-run profile/project deletion manifest; add `--apply` to delete. |
 
-Switch projects with `rolescout init --activate <code>`, or run one command against a specific project with `--project <code>`.
+Switch projects with `rolenavi init --activate <code>`, or run one command against a specific project with `--project <code>`.
 
 ## Model Settings
 
-RoleScout does not inherit your Codex CLI default model or reasoning effort. For Codex runs, RoleScout passes explicit settings per workflow.
+RoleNavi does not inherit your Codex CLI default model or reasoning effort. For Codex runs, RoleNavi passes explicit settings per workflow.
 
 Default profiles:
 
@@ -236,10 +242,10 @@ Default profiles:
 
 `search` is deterministic by default, so it does not invoke a model unless optional auto-scoring or the legacy search path is explicitly enabled.
 
-The editable file is created at `~/.rolescout/model-profiles.json` when `rolescout doctor` or a live Codex run checks model settings. Edit that file directly, or point RoleScout at another JSON file:
+The editable file is created at `~/.rolenavi/model-profiles.json` when `rolenavi doctor` or a live Codex run checks model settings. Edit that file directly, or point RoleNavi at another JSON file:
 
 ```bash
-ROLESCOUT_MODEL_PROFILES=/path/to/model-profiles.json rolescout run search
+ROLENAVI_MODEL_PROFILES=/path/to/model-profiles.json rolenavi run search
 ```
 
 For `--provider cli`, the same file drives the `{model}` and `{effort}` placeholders through its `external_cli` section.
@@ -247,22 +253,24 @@ For `--provider cli`, the same file drives the `{model}` and `{effort}` placehol
 One-run override:
 
 ```bash
-ROLESCOUT_CODEX_MODEL=gpt-5.5 ROLESCOUT_CODEX_EFFORT=high rolescout run prep-resume
+ROLENAVI_CODEX_MODEL=gpt-5.5 ROLENAVI_CODEX_EFFORT=high rolenavi run prep-resume
 ```
 
 ## Key Features
 
 | Feature | Description |
 |---|---|
-| Job research | Multi-source discovery with canonical URLs, deduplication, job-description snapshots, and a research log. |
-| Fit scoring | Weighted 0-100 prioritization with explicit criteria and separate human overrides. |
+| Deterministic job search | Multi-source discovery with canonical URLs, deduplication, job-description snapshots, and a research log. |
+| Agentic evaluation and deterministic finalization | Compact captured-job batches receive semantic evaluation; explicit weights, gates, and separate human overrides determine the final 0–100 priority. |
 | Preparation materials | Target-group strategy, one-page DOCX resume variants, LinkedIn review, and positioning notes. |
 | Interview preparation | Per-position packs: likely questions, answer plans, resume-based story bank, company/position news, glossary, and interview-specific preparation notes. |
 | Application instructions | Local-only application steps per position: checked links, required materials, visible questions, sensitive-field guidance, and tracker rows. |
-| Evidence discipline | Resume and profile recommendations must trace back to the local evidence map. |
+| Evidence-backed materials | Resume, LinkedIn, and interview claims trace back to the local evidence map. |
+| Human-controlled workflow | Search → choose focused positions → prepare → submit manually. RoleNavi never submits an application for you. |
 | Local tracker | User-managed pipeline with status, next action, due date, and notes. |
-| Sensitivity-separated stores | Public opportunity facts live in `data/public-opportunities.db`; private pipeline state lives in `private/pipeline.db`. Exports are explicit and remain separated. |
+| Sensitivity-separated SQLite stores | Public job-posting facts live in `data/public-opportunities.db`; private application and pipeline state lives in `private/pipeline.db`. Exports are explicit and remain separated. |
 | Local data model | Profiles, projects, generated files, SQLite stores, and telemetry remain on your device. Use the privacy audit and dry-run cleanup/deletion commands to inspect retention. |
+| Defensive local operations | Atomic writes, path validation, size limits, and a deny-by-default privacy registry protect local artifacts and model packets. |
 | CLI flexibility | Codex by default, plus a developer-only generic adapter for other authenticated local agent CLIs. |
 
 ## Languages

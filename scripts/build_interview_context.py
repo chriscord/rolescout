@@ -2,7 +2,7 @@
 """Build deterministic per-position context scaffolds for prep-interview.
 
 The script intentionally does not classify a company into a hard-coded industry.
-It gathers local RoleScout evidence and emits web-search prompts the interview
+It gathers local RoleNavi evidence and emits web-search prompts the interview
 agent must use to fill a researched industry thesis before drafting The Whys.
 """
 

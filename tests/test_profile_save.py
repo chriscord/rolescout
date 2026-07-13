@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rolescout import profile_meta
-from rolescout.web import server as web_server
+from rolenavi import profile_meta
+from rolenavi.web import server as web_server
 
 
 class _ProfileManager:

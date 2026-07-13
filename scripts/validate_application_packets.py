@@ -90,7 +90,7 @@ def validate_packet(path: Path, project: Path, tracker_rows: list[dict]) -> list
     if not re.search(r"capture (?:completeness|boundary)|required upload", text, re.I):
         errors.append(f"{rel}: packet must disclose route-capture completeness/boundary")
     if not re.search(r"\b(?:do not|never|not)\b.{0,80}\bsubmit", text, re.I | re.S):
-        errors.append(f"{rel}: packet must state that RoleScout does not submit the application")
+        errors.append(f"{rel}: packet must state that RoleNavi does not submit the application")
     if not re.search(r"https?://", text):
         errors.append(f"{rel}: packet must include the verified posting/application URL")
     if re.search(r"https?://[^\s]*\[(?:phone|contact) redacted\]", text, re.I):

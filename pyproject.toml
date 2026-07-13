@@ -1,4 +1,4 @@
-# RoleScout — local-first AI recruiting workflow + EvalOps toolkit.
+# RoleNavi — local-first AI recruiting workflow + EvalOps toolkit.
 # Local pipx/uv install from the repository is supported.
 
 [build-system]
@@ -6,13 +6,13 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rolescout"
+name = "rolenavi"
 dynamic = ["version"]
 readme = "README.md"
 description = "Local-first AI recruiting workflow product with a first-class eval/bench quality system"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "RoleScout maintainer" }]
+authors = [{ name = "RoleNavi maintainer" }]
 keywords = ["recruiting", "job-search", "agent", "evals", "local-first"]
 
 # PDF profile text is extracted deterministically before any model call.
@@ -29,18 +29,18 @@ browser = ["playwright"]
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-rolescout = "rolescout.cli:main"
+rolenavi = "rolenavi.cli:main"
 
 [tool.setuptools]
-packages = { find = { include = ["rolescout*"] } }
+packages = { find = { include = ["rolenavi*"] } }
 
 [tool.setuptools.package-data]
-rolescout = ["llm/envelopes/*.json", "qa/judge_prompts/*.md",
+rolenavi = ["llm/envelopes/*.json", "qa/judge_prompts/*.md",
              "bench/mock_outputs/*.json", "telemetry/*.md", "web/*.html",
              "llm/model-profiles.json"]
 
 [tool.setuptools.dynamic]
-version = { attr = "rolescout.__version__" }
+version = { attr = "rolenavi.__version__" }
 
 [tool.ruff]
 line-length = 100
