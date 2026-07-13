@@ -4,6 +4,8 @@
 
 **A local-first AI tool for job-search research and application preparation.**
 
+<img src="assets/demo.gif" alt="RoleNavi demo" width="920">
+
 [![version](https://img.shields.io/badge/version-0.1.0-blueviolet)]()
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![local-first](https://img.shields.io/badge/local--first-career%20data-success)]()

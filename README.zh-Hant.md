@@ -4,6 +4,8 @@
 
 **用於職缺研究與申請準備的本機優先 AI 工具。**
 
+<img src="assets/demo.gif" alt="RoleNavi 示範" width="920">
+
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | 繁體中文
 
 </div>

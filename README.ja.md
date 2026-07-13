@@ -4,6 +4,8 @@
 
 **求人調査と応募準備のための、ローカル優先のAIツール。**
 
+<img src="assets/demo.gif" alt="RoleNavi デモ" width="920">
+
 [English](README.md) | [한국어](README.ko.md) | 日本語 | [繁體中文](README.zh-Hant.md)
 
 </div>
