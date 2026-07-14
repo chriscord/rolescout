@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/insta
 irm https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-windows.ps1 | iex
 ```
 
-각 installer는 RoleNavi를 macOS/Windows에서는 `~/RoleNavi`, Linux에서는 `~/rolenavi`에 clone하고, `.venv` 생성·스프레드시트 지원 기본 설치·`rolenavi` 명령 검증까지 수행합니다. 다른 위치를 쓰려면 installer 실행 전에 `ROLENAVI_INSTALL_DIR`를 설정하세요.
+각 installer는 RoleNavi를 macOS/Windows에서는 `~/RoleNavi`, Linux에서는 `~/rolenavi`에 clone하고, `.venv` 생성·스프레드시트 지원 기본 설치·`rolenavi` 명령 검증까지 수행합니다. 다른 위치를 쓰려면 installer 실행 전에 `ROLENAVI_INSTALL_DIR`를 설정하세요. 설치가 중단되어 해당 위치에 정상 RoleNavi checkout이 남아 있다면 같은 명령을 다시 실행해 안전하게 재개할 수 있습니다. 관련 없는 기존 디렉터리는 덮어쓰지 않습니다.
 
 ### LinkedIn 프로필 자동 분석을 위한 선택 브라우저 도구
 

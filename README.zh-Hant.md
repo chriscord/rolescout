@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/insta
 irm https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-windows.ps1 | iex
 ```
 
-每個 installer 都會在 macOS/Windows 的 `~/RoleNavi` 或 Linux 的 `~/rolenavi` clone RoleNavi，建立 `.venv`、安裝含試算表支援的基本設定，並驗證 `rolenavi` 命令。若要使用其他位置，請先設定 `ROLENAVI_INSTALL_DIR`。
+每個 installer 都會在 macOS/Windows 的 `~/RoleNavi` 或 Linux 的 `~/rolenavi` clone RoleNavi，建立 `.venv`、安裝含試算表支援的基本設定，並驗證 `rolenavi` 命令。若要使用其他位置，請先設定 `ROLENAVI_INSTALL_DIR`。若安裝中斷後該位置仍保留預期的 RoleNavi checkout，重新執行相同命令即可安全地繼續；installer 不會覆寫不相關的既有目錄。
 
 ### LinkedIn 個人檔案自動分析的選配瀏覽器工具
 

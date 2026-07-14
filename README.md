@@ -55,7 +55,9 @@ irm https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-wind
 Each installer clones RoleNavi into `~/RoleNavi` (macOS/Windows) or
 `~/rolenavi` (Linux), creates `.venv`, installs the base spreadsheet-enabled
 setup, and verifies the `rolenavi` command. Set `ROLENAVI_INSTALL_DIR` before
-running an installer to choose another location.
+running an installer to choose another location. If an interrupted install left
+the expected RoleNavi checkout in that directory, rerun the same command to
+resume safely. The installer will not overwrite an unrelated directory.
 
 ### Optional browser tooling for LinkedIn analysis
 
