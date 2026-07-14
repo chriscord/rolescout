@@ -165,7 +165,7 @@ def run_checks(root: Path | None = None) -> list[tuple[str, str, str]]:
     # 6. active project integrity
     proj = active_project_dir(root)
     if proj is None:
-        results.append((WARN, "project", "no active project - run `rolenavi init`"))
+        results.append((WARN, "project", "no active project - open the UI with `./start`"))
     else:
         results.append((OK, "project", proj.name))
         public_db = proj / "data" / "public-opportunities.db"

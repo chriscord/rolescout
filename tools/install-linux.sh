@@ -3,7 +3,8 @@
 set -euo pipefail
 
 REPO_URL="${ROLENAVI_REPO_URL:-https://github.com/chriscord/rolenavi.git}"
-INSTALL_DIR="${ROLENAVI_INSTALL_DIR:-$HOME/rolenavi}"
+CALL_DIR="$(pwd -P)"
+INSTALL_DIR="${ROLENAVI_INSTALL_DIR:-$CALL_DIR/rolenavi}"
 
 as_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -47,7 +48,14 @@ else
       echo "Move it aside or set ROLENAVI_INSTALL_DIR to choose another location."
       exit 1
     fi
-    echo "Resuming the existing RoleNavi checkout in $INSTALL_DIR"
+    tracked_changes="$(git -C "$INSTALL_DIR" status --porcelain --untracked-files=no)"
+    if [[ -n "$tracked_changes" ]]; then
+      echo "ERROR: the existing RoleNavi checkout has tracked changes: $INSTALL_DIR"
+      echo "Commit, stash, or discard those changes before rerunning the installer."
+      exit 1
+    fi
+    echo "Updating the existing RoleNavi checkout in $INSTALL_DIR"
+    git -C "$INSTALL_DIR" pull --ff-only
   else
     git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
@@ -84,7 +92,7 @@ cd "$ROOT"
 "$ROOT/.venv/bin/rolenavi" --version
 
 echo
-echo "RoleNavi installed in $ROOT"
-echo "  activate: source .venv/bin/activate"
-echo "  next:     npm install -g @openai/codex && codex login"
-echo "  verify:   rolenavi doctor"
+echo "RoleNavi is ready in $ROOT"
+echo "  start:  cd \"$ROOT\" && ./start"
+echo "  check:  cd \"$ROOT\" && ./start doctor"
+echo "  Codex:  npm install -g @openai/codex && codex login"

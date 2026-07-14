@@ -41,26 +41,30 @@ jobs:
         shell: bash
         env:
           ROLENAVI_REPO_URL: ${{ github.workspace }}
-          ROLENAVI_INSTALL_DIR: ${{ runner.temp }}/rolenavi-installer-smoke
         run: |
           test -x "${{ matrix.installer }}"
+          install_parent="$RUNNER_TEMP/rolenavi-installer-smoke-parent"
+          mkdir -p "$install_parent"
+          cd "$install_parent"
           bash < "$GITHUB_WORKSPACE/${{ matrix.installer }}"
-          cd "$ROLENAVI_INSTALL_DIR"
-          "$ROLENAVI_INSTALL_DIR/.venv/bin/rolenavi" --version
-          "$ROLENAVI_INSTALL_DIR/.venv/bin/rolenavi" doctor
+          test -x "$install_parent/rolenavi/start"
+          "$install_parent/rolenavi/start" --version
+          "$install_parent/rolenavi/start" doctor
           bash < "$GITHUB_WORKSPACE/${{ matrix.installer }}"
       - name: Run Windows installer through its documented pipe entrypoint
         if: runner.os == 'Windows'
         shell: powershell
         env:
           ROLENAVI_REPO_URL: ${{ github.workspace }}
-          ROLENAVI_INSTALL_DIR: ${{ runner.temp }}\rolenavi-installer-smoke
         run: |
           $installer = Join-Path $env:GITHUB_WORKSPACE "${{ matrix.installer }}"
+          $installParent = Join-Path $env:RUNNER_TEMP 'rolenavi-installer-smoke-parent'
+          New-Item -ItemType Directory -Force -Path $installParent | Out-Null
+          Set-Location -LiteralPath $installParent
           Get-Content -Raw -LiteralPath $installer | Invoke-Expression
-          Set-Location -LiteralPath $env:ROLENAVI_INSTALL_DIR
-          & (Join-Path $env:ROLENAVI_INSTALL_DIR '.venv\Scripts\rolenavi.exe') --version
+          $installDir = Join-Path $installParent 'rolenavi'
+          & (Join-Path $installDir 'start.cmd') --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path $env:ROLENAVI_INSTALL_DIR '.venv\Scripts\rolenavi.exe') doctor
+          & (Join-Path $installDir 'start.cmd') doctor
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Content -Raw -LiteralPath $installer | Invoke-Expression

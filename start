@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# RoleNavi launcher: keep the internal virtual environment out of the user workflow.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$ROOT/.venv/bin/rolenavi"
+
+if [[ ! -x "$BIN" ]]; then
+  echo "ERROR: RoleNavi is not installed in $ROOT" >&2
+  echo "Rerun the installer from the parent directory." >&2
+  exit 1
+fi
+
+cd "$ROOT"
+if [[ "$#" -eq 0 ]]; then
+  set -- web
+fi
+exec "$BIN" "$@"

@@ -4,7 +4,8 @@ param([switch]$FromCheckout)
 
 $ErrorActionPreference = 'Stop'
 $repoUrl = if ($env:ROLENAVI_REPO_URL) { $env:ROLENAVI_REPO_URL } else { 'https://github.com/chriscord/rolenavi.git' }
-$installDir = if ($env:ROLENAVI_INSTALL_DIR) { $env:ROLENAVI_INSTALL_DIR } else { Join-Path $HOME 'RoleNavi' }
+$callDir = (Get-Location).Path
+$installDir = if ($env:ROLENAVI_INSTALL_DIR) { $env:ROLENAVI_INSTALL_DIR } else { Join-Path $callDir 'rolenavi' }
 
 function Assert-NativeSuccess([string]$Action, [int]$ExitCode) {
     if ($ExitCode -ne 0) {
@@ -96,7 +97,14 @@ if ($FromCheckout) {
         if ($isLink -or -not (Test-Path -LiteralPath $expectedScript) -or $origin -ne $repoUrl) {
             throw "Install directory exists but is not the expected RoleNavi checkout: $installDir`nMove it aside or set ROLENAVI_INSTALL_DIR to choose another location."
         }
-        Write-Host "Resuming the existing RoleNavi checkout in $installDir"
+        $trackedChanges = (& $git -C $installDir status --porcelain --untracked-files=no)
+        Assert-NativeSuccess 'git status' $LASTEXITCODE
+        if ($trackedChanges) {
+            throw "The existing RoleNavi checkout has tracked changes: $installDir`nCommit, stash, or discard those changes before rerunning the installer."
+        }
+        Write-Host "Updating the existing RoleNavi checkout in $installDir"
+        & $git -C $installDir pull --ff-only
+        Assert-NativeSuccess 'git pull' $LASTEXITCODE
     } else {
         & $git clone --depth 1 $repoUrl $installDir
         Assert-NativeSuccess 'git clone' $LASTEXITCODE
@@ -116,7 +124,7 @@ Assert-NativeSuccess 'RoleNavi installation' $LASTEXITCODE
 Assert-NativeSuccess 'RoleNavi verification' $LASTEXITCODE
 
 Write-Host ''
-Write-Host "RoleNavi installed in $root"
-Write-Host '  activate: .\.venv\Scripts\Activate.ps1'
-Write-Host '  next:     npm install -g @openai/codex; codex login'
-Write-Host '  verify:   rolenavi doctor'
+Write-Host "RoleNavi is ready in $root"
+Write-Host "  start:  cd `"$root`"; .\start.cmd"
+Write-Host "  check:  cd `"$root`"; .\start.cmd doctor"
+Write-Host '  Codex:  npm install -g @openai/codex; codex login'

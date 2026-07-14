@@ -38,26 +38,35 @@ after installation with `npm install -g @openai/codex` and `codex login`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-macos.sh | bash
+cd rolenavi
+./start
 ```
 
 ### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-linux.sh | bash
+cd rolenavi
+./start
 ```
 
 ### Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/chriscord/rolenavi/main/tools/install-windows.ps1 | iex
+cd rolenavi
+.\start.cmd
 ```
 
-Each installer clones RoleNavi into `~/RoleNavi` (macOS/Windows) or
-`~/rolenavi` (Linux), creates `.venv`, installs the base spreadsheet-enabled
-setup, and verifies the `rolenavi` command. Set `ROLENAVI_INSTALL_DIR` before
-running an installer to choose another location. If an interrupted install left
-the expected RoleNavi checkout in that directory, rerun the same command to
-resume safely. The installer will not overwrite an unrelated directory.
+Each installer creates `./rolenavi` in the directory where you run it. The
+launcher manages the internal Python environment and opens the
+local web UI, so users never need to activate `.venv`. Set
+`ROLENAVI_INSTALL_DIR` before running the installer to choose another location.
+Rerunning the same command safely updates a clean RoleNavi checkout and resumes
+installation; it will not overwrite an unrelated directory or tracked changes.
+
+The Unix commands below assume you are inside `rolenavi` and use `./start`.
+On Windows, use `.\start.cmd` instead.
 
 ### Optional browser tooling for LinkedIn analysis
 
@@ -116,7 +125,7 @@ winget install Python.Python.3.12
 Optional external CLI connection (developer-only; RoleNavi cannot verify an arbitrary CLI's sandbox):
 
 ```bash
-rolenavi run search \
+./start run search \
   --provider cli \
   --llm-name glm \
   --llm-cmd 'your-agent run --model {model} --effort {effort}'
@@ -136,7 +145,7 @@ staging directory with an allowlisted environment.
 ## Verify Installation
 
 ```bash
-rolenavi --version
+./start --version
 ```
 
 Expected output:
@@ -148,16 +157,19 @@ rolenavi 0.1.0
 Then run:
 
 ```bash
-rolenavi doctor
+./start doctor
 ```
 
 ## How To Use
 
 ```bash
-rolenavi web
+cd rolenavi
+./start
 ```
 
-The browser opens automatically at `http://127.0.0.1:8787`. The interface is loopback-only and is not hosted.
+`./start` runs the installed equivalent of `rolenavi web` without activating
+`.venv`. The browser opens automatically at `http://127.0.0.1:8787`. The
+interface is loopback-only and is not hosted.
 
 For default live AI workflows, first connect your ChatGPT/Codex subscription with `codex login`. RoleNavi invokes that local Codex CLI; it does not require an API key.
 
@@ -192,42 +204,42 @@ The workflow deliberately keeps people in control: **deterministic job search �
 Every CLI command uses the active profile and project unless you pass `--project <code>`.
 
 ```bash
-rolenavi init --person you --focus ai-product --locations "San Francisco"
-rolenavi run profile-intake --person you
-rolenavi run opportunity-plan
-rolenavi run search
-rolenavi run score
-rolenavi run prep
-rolenavi run prep-strategy
-rolenavi run prep-resume
-rolenavi run prep-linkedin
-rolenavi run prep-interview
-rolenavi run story-bank
-rolenavi run apply
-rolenavi export --public
-rolenavi privacy audit
+./start init --person you --focus ai-product --locations "San Francisco"
+./start run profile-intake --person you
+./start run opportunity-plan
+./start run search
+./start run score
+./start run prep
+./start run prep-strategy
+./start run prep-resume
+./start run prep-linkedin
+./start run prep-interview
+./start run story-bank
+./start run apply
+./start export --public
+./start privacy audit
 ```
 
 | Command | Expected outcome |
 |---|---|
-| `rolenavi init --person you --focus ai-product --locations "San Francisco"` | Creates or activates a profile/project pair. Use `--companies`, `--role`, `--level`, `--comp-range`, and `--negatives` to set project preferences from the command line. |
-| `rolenavi run profile-intake --person you` | Builds or refreshes `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` from resume/materials and accepted LinkedIn current-source content. |
-| `rolenavi run opportunity-plan` | Optionally creates a bounded, typed company universe from model-allowed target preferences. |
-| `rolenavi run search` | Runs deterministic provider-first discovery, captures direct posting URLs/JD snapshots, writes the raw Jobs store, and builds the UI-visible Jobs view. It does not score by default. |
-| `rolenavi run score` | Rates every current UI-visible Jobs row through runner-built compact batches, then the runner recomputes weighted scores and writes `fit_score`/`priority` back to the Jobs view. |
-| `rolenavi run prep` | Runs strategy, resume, LinkedIn, and interview preparation for focused positions. |
-| `rolenavi run prep-strategy` | Produces the grouped application strategy and priority plan only. |
-| `rolenavi run prep-resume` | Produces targeted resume drafts for the focused job groups. |
-| `rolenavi run prep-linkedin` | Produces LinkedIn current → to-be recommendations. |
-| `rolenavi run prep-interview` | Produces interview packs and the story bank for focused positions. |
-| `rolenavi run story-bank` | Rebuilds the shared resume-derived story bank independently. |
-| `rolenavi run apply` | Creates application instructions and tracker rows for focused positions; no automatic submission. |
-| `rolenavi export --public` / `--private` | Creates an explicit sensitivity-separated export and revision manifest. |
-| `rolenavi privacy audit` | Reports local runtime/telemetry footprint without printing private contents. |
-| `rolenavi clean --runtime` | Prints a dry-run retention manifest; add `--apply` to delete it. |
-| `rolenavi delete-person --person <slug>` | Prints a dry-run profile/project deletion manifest; add `--apply` to delete. |
+| `./start init --person you --focus ai-product --locations "San Francisco"` | Creates or activates a profile/project pair. Use `--companies`, `--role`, `--level`, `--comp-range`, and `--negatives` to set project preferences from the command line. |
+| `./start run profile-intake --person you` | Builds or refreshes `profiles/<person>/candidate-profile.md` and `profiles/<person>/evidence-map.md` from resume/materials and accepted LinkedIn current-source content. |
+| `./start run opportunity-plan` | Optionally creates a bounded, typed company universe from model-allowed target preferences. |
+| `./start run search` | Runs deterministic provider-first discovery, captures direct posting URLs/JD snapshots, writes the raw Jobs store, and builds the UI-visible Jobs view. It does not score by default. |
+| `./start run score` | Rates every current UI-visible Jobs row through runner-built compact batches, then the runner recomputes weighted scores and writes `fit_score`/`priority` back to the Jobs view. |
+| `./start run prep` | Runs strategy, resume, LinkedIn, and interview preparation for focused positions. |
+| `./start run prep-strategy` | Produces the grouped application strategy and priority plan only. |
+| `./start run prep-resume` | Produces targeted resume drafts for the focused job groups. |
+| `./start run prep-linkedin` | Produces LinkedIn current → to-be recommendations. |
+| `./start run prep-interview` | Produces interview packs and the story bank for focused positions. |
+| `./start run story-bank` | Rebuilds the shared resume-derived story bank independently. |
+| `./start run apply` | Creates application instructions and tracker rows for focused positions; no automatic submission. |
+| `./start export --public` / `--private` | Creates an explicit sensitivity-separated export and revision manifest. |
+| `./start privacy audit` | Reports local runtime/telemetry footprint without printing private contents. |
+| `./start clean --runtime` | Prints a dry-run retention manifest; add `--apply` to delete it. |
+| `./start delete-person --person <slug>` | Prints a dry-run profile/project deletion manifest; add `--apply` to delete. |
 
-Switch projects with `rolenavi init --activate <code>`, or run one command against a specific project with `--project <code>`.
+Switch projects with `./start init --activate <code>`, or run one command against a specific project with `--project <code>`.
 
 ## Model Settings
 
@@ -246,10 +258,10 @@ Default profiles:
 
 `search` is deterministic by default, so it does not invoke a model unless optional auto-scoring or the legacy search path is explicitly enabled.
 
-The editable file is created at `~/.rolenavi/model-profiles.json` when `rolenavi doctor` or a live Codex run checks model settings. Edit that file directly, or point RoleNavi at another JSON file:
+The editable file is created at `~/.rolenavi/model-profiles.json` when `./start doctor` or a live Codex run checks model settings. Edit that file directly, or point RoleNavi at another JSON file:
 
 ```bash
-ROLENAVI_MODEL_PROFILES=/path/to/model-profiles.json rolenavi run search
+ROLENAVI_MODEL_PROFILES=/path/to/model-profiles.json ./start run search
 ```
 
 For `--provider cli`, the same file drives the `{model}` and `{effort}` placeholders through its `external_cli` section.
@@ -257,7 +269,7 @@ For `--provider cli`, the same file drives the `{model}` and `{effort}` placehol
 One-run override:
 
 ```bash
-ROLENAVI_CODEX_MODEL=gpt-5.5 ROLENAVI_CODEX_EFFORT=high rolenavi run prep-resume
+ROLENAVI_CODEX_MODEL=gpt-5.5 ROLENAVI_CODEX_EFFORT=high ./start run prep-resume
 ```
 
 ## Key Features

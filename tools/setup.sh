@@ -29,7 +29,7 @@ echo "using $PY ($("$PY" -V 2>&1))"
 
 echo
 echo "OK — installed into .venv (system Python untouched)"
-echo "  activate:  source .venv/bin/activate"
-echo "  then:      rolenavi doctor"
+echo "  start UI:  ./start"
+echo "  verify:    ./start doctor"
 echo "  live runs: install Codex CLI, then run: codex login"
-echo "  other CLIs: rolenavi run search --provider cli --llm-cmd 'your-agent {prompt}'"
+echo "  other CLIs: ./start run search --provider cli --llm-cmd 'your-agent {prompt}'"
